@@ -1922,7 +1922,6 @@ $('#tr_src').onchange = async ()=>{
   }
 };
 
-$('#btnCreateTransition').onclick = async ()=>{
 async function collectTransitionPayload({useExistingMeta=false}={}){
   const formId = CURRENT_FORM_ID || +$('#formsSelect').value;
   const sourceId = +$('#tr_src').value;
