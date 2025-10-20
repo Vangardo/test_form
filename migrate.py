@@ -308,10 +308,14 @@ ON CONFLICT(id) DO NOTHING;
 UPDATE forms SET start_step_id = 10 WHERE id = 1;
 
 -- 4. Создаем Поля (id=101, 201)
-INSERT INTO step_fields (id, step_id, code, title, data_type_id, input_type_id, is_required)
+INSERT INTO step_fields (id, step_id, code, title, data_type_id, input_type_id, is_required, default_hidden)
 VALUES
-  (101, 10, 'is_dev', 'Вы разработчик?', (SELECT id FROM field_data_types WHERE code = 'boolean'), (SELECT id FROM field_input_types WHERE code = 'checkbox'), TRUE),
-  (201, 20, 'fav_lang', 'Любимый язык?', (SELECT id FROM field_data_types WHERE code = 'string'), (SELECT id FROM field_input_types WHERE code = 'select'), TRUE)
+  (101, 10, 'is_dev', 'Вы разработчик?', (SELECT id FROM field_data_types WHERE code = 'boolean'), (SELECT id FROM field_input_types WHERE code = 'checkbox'), TRUE, FALSE),
+  (201, 20, 'fav_lang', 'Любимый язык?', (SELECT id FROM field_data_types WHERE code = 'string'), (SELECT id FROM field_input_types WHERE code = 'select'), TRUE, FALSE),
+  (202, 20, 'dev_years', 'Сколько лет вы работаете разработчиком?',
+      (SELECT id FROM field_data_types WHERE code = 'integer'),
+      (SELECT id FROM field_input_types WHERE code = 'input'),
+      FALSE, TRUE)
 ON CONFLICT(id) DO NOTHING;
 
 -- 5. Добавляем опции для поля "fav_lang" (id=201)
@@ -340,6 +344,15 @@ ON CONFLICT(id) DO NOTHING;
 INSERT INTO conditions (group_id, field_id, op_id)
 VALUES (2, 101, (SELECT id FROM compare_ops WHERE code = 'is_false'))
 ON CONFLICT(id) DO NOTHING;
+
+-- Правила видимости: показываем "dev_years", если пользователь разработчик
+INSERT INTO field_visibility_rules (id, step_id, condition_group_id, action_id, priority)
+VALUES (1, 20, 1, (SELECT id FROM visibility_actions WHERE code = 'show'), 10)
+ON CONFLICT(id) DO NOTHING;
+
+INSERT INTO visibility_targets (visibility_rule_id, field_id)
+VALUES (1, 202)
+ON CONFLICT(visibility_rule_id, field_id) DO NOTHING;
 
 -- Группа 99: "Default"
 INSERT INTO condition_groups (id, form_id, logic_op, description)

@@ -115,7 +115,7 @@ async def _fetch_step(step_id: int) -> StepRead:
 async def _fetch_conditions(group_id: int) -> List[ConditionRead]:
     query_conditions = """
         SELECT c.id, c.field_id, c.op_id, c.value_text, c.value_num, c.value_bool,
-               c.value_date, c.option_code, c.position,
+               c.value_date, c.option_code, c.position, c.rhs_field_id,
                sf.code AS field_code, sf.title AS field_title,
                rhs.code AS rhs_field_code,
                co.code AS op_code, co.title AS op_title
@@ -131,6 +131,7 @@ async def _fetch_conditions(group_id: int) -> List[ConditionRead]:
     return [
         ConditionRead(
             id=row.id,
+            field_id=row.field_id,
             field_code=row.field_code,
             field_title=row.field_title,
             op_code=row.op_code,
@@ -141,6 +142,7 @@ async def _fetch_conditions(group_id: int) -> List[ConditionRead]:
             value_date=row.value_date,
             option_code=row.option_code,
             rhs_field_code=row.rhs_field_code,
+            rhs_field_id=row.rhs_field_id,
             position=row.position
         )
         for row in condition_rows
@@ -240,7 +242,7 @@ async def _fetch_visibility_rule(rule_id: int) -> VisibilityRuleRead:
     conditions = await _fetch_conditions(row.condition_group_id)
 
     targets_query = """
-        SELECT t.sort_order, f.code, f.title
+        SELECT t.sort_order, f.id AS field_id, f.code, f.title
         FROM visibility_targets t
         JOIN step_fields f ON t.field_id = f.id
         WHERE t.visibility_rule_id = :rule_id
@@ -249,6 +251,7 @@ async def _fetch_visibility_rule(rule_id: int) -> VisibilityRuleRead:
     targets_rows = await database.fetch_all(targets_query, {"rule_id": rule_id})
     targets = [
         VisibilityTargetRead(
+            field_id=target.field_id,
             field_code=target.code,
             field_title=target.title,
             sort_order=target.sort_order
@@ -268,6 +271,14 @@ async def _fetch_visibility_rule(rule_id: int) -> VisibilityRuleRead:
         conditions=conditions,
         targets=targets
     )
+
+
+async def _fetch_step_visibility_rules(step_id: int) -> List[VisibilityRuleRead]:
+    rows = await database.fetch_all(
+        "SELECT id FROM field_visibility_rules WHERE step_id = :step_id ORDER BY priority, id",
+        {"step_id": step_id}
+    )
+    return [await _fetch_visibility_rule(row.id) for row in rows]
 
 
 # ====================================================================
@@ -350,6 +361,7 @@ class FieldBase(BaseModel):
     data_type_code: str
     input_type_code: str
     is_required: bool = False
+    default_hidden: bool = False
     sort_order: int = 100
 
 
@@ -390,6 +402,7 @@ class FieldUpdate(BaseModel):
     data_type_code: Optional[str] = None
     input_type_code: Optional[str] = None
     is_required: Optional[bool] = None
+    default_hidden: Optional[bool] = None
     sort_order: Optional[int] = None
     dictionary_code: Optional[str] = None
     options: Optional[List[FieldOptionCreate]] = None
@@ -414,8 +427,10 @@ class ConditionCreate(ConditionBase):
 
 class ConditionRead(ConditionBase):
     id: int
+    field_id: int
     field_title: str
     op_title: str
+    rhs_field_id: Optional[int] = None
 
 
 class VisibilityTargetCreate(BaseModel):
@@ -424,6 +439,7 @@ class VisibilityTargetCreate(BaseModel):
 
 
 class VisibilityTargetRead(BaseModel):
+    field_id: int
     field_code: str
     field_title: str
     sort_order: int
@@ -733,8 +749,14 @@ async def create_field(step_id: int, field: FieldCreate):
 
     async with database.transaction():
         query_field = """
-            INSERT INTO step_fields (step_id, code, title, data_type_id, input_type_id, dictionary_id, is_required, sort_order)
-            VALUES (:step_id, :code, :title, :data_type_id, :input_type_id, :dictionary_id, :is_required, :sort_order)
+            INSERT INTO step_fields (
+                step_id, code, title, data_type_id, input_type_id, dictionary_id,
+                is_required, default_hidden, sort_order
+            )
+            VALUES (
+                :step_id, :code, :title, :data_type_id, :input_type_id, :dictionary_id,
+                :is_required, :default_hidden, :sort_order
+            )
             RETURNING id
         """
         values = field.dict()
@@ -826,7 +848,7 @@ async def update_field(field_id: int, field: FieldUpdate):
     query_current = """
         SELECT
             f.id, f.step_id, f.code, f.title, f.data_type_id, f.input_type_id,
-            f.is_required, f.sort_order, f.dictionary_id,
+            f.is_required, f.sort_order, f.dictionary_id, f.default_hidden,
             dt.code AS data_type_code,
             it.code AS input_type_code,
             d.code  AS dictionary_code
@@ -853,6 +875,8 @@ async def update_field(field_id: int, field: FieldUpdate):
     final_input_type_code = incoming.get('input_type_code', current.input_type_code)
     final_is_required = incoming.get('is_required', bool(current.is_required))
     final_sort_order = incoming.get('sort_order', current.sort_order)
+    final_default_hidden = incoming.get('default_hidden', bool(current.default_hidden))
+    final_default_hidden = bool(final_default_hidden)
 
     dictionary_code_provided = 'dictionary_code' in incoming
     options_provided = 'options' in incoming
@@ -907,6 +931,7 @@ async def update_field(field_id: int, field: FieldUpdate):
         "data_type_id = :data_type_id",
         "input_type_id = :input_type_id",
         "is_required = :is_required",
+        "default_hidden = :default_hidden",
         "sort_order = :sort_order",
         "dictionary_id = :dictionary_id"
     ]
@@ -918,6 +943,7 @@ async def update_field(field_id: int, field: FieldUpdate):
         "data_type_id": data_type_id,
         "input_type_id": input_type_id,
         "is_required": final_is_required,
+        "default_hidden": final_default_hidden,
         "sort_order": final_sort_order,
         "dictionary_id": dictionary_id
     }
@@ -1578,8 +1604,47 @@ class UserStepField(BaseModel):
     code: str
     title: str
     input_type: str
+    data_type_code: str
     is_required: bool
+    default_hidden: bool
+    is_visible: bool
     options: List[UserFieldOption]  # UI просто получает список
+
+
+class RuntimeVisibilityCondition(BaseModel):
+    field_code: str
+    field_id: int
+    op_code: str
+    value_text: Optional[str] = None
+    value_num: Optional[float] = None
+    value_bool: Optional[bool] = None
+    value_date: Optional[str] = None
+    option_code: Optional[str] = None
+    rhs_field_code: Optional[str] = None
+    rhs_field_id: Optional[int] = None
+
+
+class RuntimeVisibilityTarget(BaseModel):
+    field_code: str
+    field_id: int
+    sort_order: int
+
+
+class RuntimeVisibilityRule(BaseModel):
+    id: int
+    priority: int
+    action_code: str
+    logic_op: str
+    scenario_description: Optional[str] = None
+    conditions: List[RuntimeVisibilityCondition] = Field(default_factory=list)
+    targets: List[RuntimeVisibilityTarget] = Field(default_factory=list)
+
+
+class StepVisibilityState(BaseModel):
+    defaults: Dict[str, bool] = Field(default_factory=dict)
+    current: Dict[str, bool] = Field(default_factory=dict)
+    context_values: Dict[str, Any] = Field(default_factory=dict)
+    rules: List[RuntimeVisibilityRule] = Field(default_factory=list)
 
 
 class StepResponse(BaseModel):
@@ -1592,6 +1657,7 @@ class StepResponse(BaseModel):
     is_terminal: bool
     fields: List[UserStepField]
     values: Dict[str, Any]
+    visibility: Optional[StepVisibilityState] = None
     current_step_code: Optional[str] = None
     completed_steps: List[str] = Field(default_factory=list)
     available_steps: List[str] = Field(default_factory=list)
@@ -1783,17 +1849,19 @@ async def _get_step_details(instance_id: int, step_id: int, *, current_step_id: 
     if not step_row:
         raise HTTPException(status_code=404, detail=f"Шаг {step_id} не найден")
 
-    # <--- ОБНОВЛЕННЫЙ ЗАПРОС
     query_fields = """
-        SELECT 
-            f.id, f.code, f.title, 
-            ft.code AS input_type, 
+        SELECT
+            f.id, f.code, f.title,
+            ft.code AS input_type,
+            dt.code AS data_type,
             f.is_required,
-            f.dictionary_id
-        FROM step_fields f 
+            f.dictionary_id,
+            f.default_hidden
+        FROM step_fields f
         JOIN field_input_types ft ON f.input_type_id = ft.id
-        WHERE f.step_id = :step_id 
-        ORDER BY f.sort_order
+        JOIN field_data_types dt ON f.data_type_id = dt.id
+        WHERE f.step_id = :step_id
+        ORDER BY f.sort_order, f.id
     """
     fields_rows = await database.fetch_all(query_fields, {"step_id": step_id})
 
@@ -1810,25 +1878,116 @@ async def _get_step_details(instance_id: int, step_id: int, *, current_step_id: 
         for row in values_rows
     }
 
+    default_visibility: Dict[str, bool] = {
+        row.code: not bool(row.default_hidden) for row in fields_rows
+    }
+    current_visibility: Dict[str, bool] = dict(default_visibility)
+    visibility_rules_raw = await _fetch_step_visibility_rules(step_id)
+    all_answers = await _get_all_answers(instance_id) if visibility_rules_raw else {}
+    evaluated_groups: Dict[int, bool] = {}
+    runtime_rules: List[RuntimeVisibilityRule] = []
+    visibility_context: Dict[str, Any] = {}
+
+    for rule in visibility_rules_raw:
+        if rule.condition_group_id in evaluated_groups:
+            triggered = evaluated_groups[rule.condition_group_id]
+        else:
+            triggered = await _evaluate_group(rule.condition_group_id, all_answers)
+            evaluated_groups[rule.condition_group_id] = triggered
+
+        runtime_conditions = [
+            RuntimeVisibilityCondition(
+                field_code=cond.field_code,
+                field_id=cond.field_id,
+                op_code=cond.op_code,
+                value_text=cond.value_text,
+                value_num=cond.value_num,
+                value_bool=cond.value_bool,
+                value_date=cond.value_date,
+                option_code=cond.option_code,
+                rhs_field_code=cond.rhs_field_code,
+                rhs_field_id=cond.rhs_field_id,
+            )
+            for cond in rule.conditions
+        ]
+
+        for cond in rule.conditions:
+            if cond.field_code and cond.field_id is not None:
+                visibility_context.setdefault(cond.field_code, all_answers.get(cond.field_id))
+            if cond.rhs_field_code and cond.rhs_field_id is not None:
+                visibility_context.setdefault(cond.rhs_field_code, all_answers.get(cond.rhs_field_id))
+
+        runtime_targets = [
+            RuntimeVisibilityTarget(
+                field_code=target.field_code,
+                field_id=target.field_id,
+                sort_order=target.sort_order,
+            )
+            for target in rule.targets
+        ]
+
+        if triggered:
+            for target in rule.targets:
+                if rule.action_code == 'show':
+                    current_visibility[target.field_code] = True
+                elif rule.action_code == 'hide':
+                    current_visibility[target.field_code] = False
+
+        runtime_rules.append(
+            RuntimeVisibilityRule(
+                id=rule.id,
+                priority=rule.priority,
+                action_code=rule.action_code,
+                logic_op=rule.logic_op,
+                scenario_description=rule.scenario_description,
+                conditions=runtime_conditions,
+                targets=runtime_targets,
+            )
+        )
+
+    for field in fields_rows:
+        if field.code not in visibility_context:
+            base_value = values_dict.get(field.code)
+            if base_value is not None or field.code in values_dict:
+                visibility_context[field.code] = base_value
+            elif visibility_rules_raw and all_answers:
+                visibility_context[field.code] = all_answers.get(field.id)
+            else:
+                visibility_context[field.code] = base_value
+
+    visibility_payload: Optional[StepVisibilityState] = None
+    if runtime_rules or any(not flag for flag in default_visibility.values()):
+        visibility_payload = StepVisibilityState(
+            defaults=default_visibility,
+            current=current_visibility,
+            context_values=visibility_context,
+            rules=runtime_rules,
+        )
+
     fields_list = []
     for field in fields_rows:
         options = []
-        # <--- ОБНОВЛЕННАЯ ЛОГИКА
         if field.input_type in ('select', 'multiselect'):
             if field.dictionary_id:
-                # Глобальный справочник
                 query_options = "SELECT value_code, value_label FROM dictionary_values WHERE dictionary_id = :id ORDER BY sort_order"
                 options_rows = await database.fetch_all(query_options, {"id": field.dictionary_id})
                 options = [UserFieldOption(**row) for row in options_rows]
             else:
-                # Локальные опции
                 query_options = "SELECT value_code, value_label FROM field_options WHERE field_id = :id ORDER BY sort_order"
                 options_rows = await database.fetch_all(query_options, {"id": field.id})
                 options = [UserFieldOption(**row) for row in options_rows]
 
+        is_visible = current_visibility.get(field.code, default_visibility.get(field.code, True))
         fields_list.append(UserStepField(
-            id=field.id, code=field.code, title=field.title,
-            input_type=field.input_type, is_required=field.is_required, options=options
+            id=field.id,
+            code=field.code,
+            title=field.title,
+            input_type=field.input_type,
+            data_type_code=field.data_type,
+            is_required=field.is_required,
+            default_hidden=bool(field.default_hidden),
+            is_visible=bool(is_visible),
+            options=options
         ))
 
     active_step_id = current_step_id if current_step_id is not None else state.get("current_step_id")
@@ -1844,6 +2003,7 @@ async def _get_step_details(instance_id: int, step_id: int, *, current_step_id: 
         is_terminal=step_row.is_terminal,
         fields=fields_list,
         values=values_dict,
+        visibility=visibility_payload,
         current_step_code=navigation.get("current_step_code"),
         completed_steps=navigation.get("completed_steps", []),
         available_steps=navigation.get("available_steps", []),
