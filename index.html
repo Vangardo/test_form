@@ -193,6 +193,7 @@
                 <label style="flex:1 1 160px">Data Type<select id="fld_dtype"></select></label>
                 <label style="flex:1 1 160px">Input Type<select id="fld_input"></select></label>
                 <label style="flex:1 1 140px">Required?<input id="fld_req" type="checkbox" /></label>
+                <label style="flex:1 1 160px">Скрыть по умолчанию?<input id="fld_hidden" type="checkbox" /></label>
                 <label style="flex:1 1 140px">Порядок<input id="fld_order" type="number" value="100" /></label>
               </div>
               <div id="fldDictRow" class="row" style="display:none">
@@ -601,7 +602,7 @@ async function refreshFields(stepId = null){
     item.className = `item clickable${f.id===nextField?' active':''}`;
     item.dataset.fieldId = f.id;
     item.innerHTML = `<div class="row" style="justify-content:space-between"><strong>${f.code}</strong><span class="muted">#${f.id}</span></div>`+
-      `<div class="muted">${f.title} • ${f.input_type_code}/${f.data_type_code} • order ${f.sort_order}${f.is_required?' • required':''}${opts?` • opts: ${opts}`:''}${f.dictionary_code?` • dict:${f.dictionary_code}`:''}</div>`;
+      `<div class="muted">${f.title} • ${f.input_type_code}/${f.data_type_code} • order ${f.sort_order}${f.is_required?' • required':''}${f.default_hidden?' • hidden':''}${opts?` • opts: ${opts}`:''}${f.dictionary_code?` • dict:${f.dictionary_code}`:''}</div>`;
     item.onclick = ()=> selectField(f.id);
     list.appendChild(item);
   });
@@ -662,6 +663,7 @@ function resetFieldForm(){
   $('#fld_dtype').selectedIndex = 0;
   $('#fld_input').selectedIndex = 0;
   $('#fld_req').checked = false;
+  $('#fld_hidden').checked = false;
   $('#fld_order').value = 100;
   $('#fld_dict').selectedIndex = 0;
   $('#fldOpts').innerHTML='';
@@ -680,6 +682,7 @@ function fillFieldForm(field){
   $('#fld_dtype').value = field.data_type_code;
   $('#fld_input').value = field.input_type_code;
   $('#fld_req').checked = !!field.is_required;
+  $('#fld_hidden').checked = !!field.default_hidden;
   $('#fld_order').value = field.sort_order;
   $('#fld_input').dispatchEvent(new Event('change'));
 
@@ -832,6 +835,7 @@ $('#btnCreateField').onclick = async ()=>{
     data_type_code:$('#fld_dtype').value,
     input_type_code:$('#fld_input').value,
     is_required:$('#fld_req').checked,
+    default_hidden:$('#fld_hidden').checked,
     sort_order:+$('#fld_order').value||100
   };
   const dictCode = $('#fld_dict').value;
@@ -861,6 +865,7 @@ $('#btnUpdateField').onclick = async ()=>{
     data_type_code: $('#fld_dtype').value,
     input_type_code: $('#fld_input').value,
     is_required: $('#fld_req').checked,
+    default_hidden: $('#fld_hidden').checked,
     sort_order: +$('#fld_order').value || 100
   };
   const dictCode = $('#fld_dict').value;
@@ -985,7 +990,8 @@ function populateVisibilityTargetSelect(){
   select.append(opt('', '— выберите —'));
   fields.forEach(f=>{
     if(existing.includes(f.code)) return;
-    select.append(opt(f.code, `${f.title} (${f.code})`));
+    const label = `${f.title} (${f.code})${f.default_hidden?' [скрыто]':''}`;
+    select.append(opt(f.code, label));
   });
   ensureVisibilityTargetsPlaceholder();
 }
@@ -1008,7 +1014,7 @@ function addVisibilityTarget(code){
     populateVisibilityTargetSelect();
     ensureVisibilityTargetsPlaceholder();
   };
-  pill.textContent = `${field.title} (${field.code})`;
+  pill.textContent = `${field.title} (${field.code})${field.default_hidden?' [скрыто]':''}`;
   pill.appendChild(btn);
   wrap.appendChild(pill);
   populateVisibilityTargetSelect();
@@ -1498,7 +1504,7 @@ async function renderStep(resp){
 
   const controls = [];
   resp.fields.forEach(f=>{
-    const row = document.createElement('div'); row.className='row'; row.style.marginBottom='8px';
+    const row = document.createElement('div'); row.className='row'; row.style.marginBottom='8px'; row.dataset.fieldCode = f.code;
     const label = document.createElement('label'); label.style.flex='1 1 100%';
     label.innerHTML = `<span class="muted">${f.title} ${f.is_required?'<span class="badge">обязательно</span>':''}</span>`;
     let ctrl;
@@ -1531,20 +1537,213 @@ async function renderStep(resp){
       else ctrl.value = existing;
     }
     label.appendChild(ctrl); row.appendChild(label); container.appendChild(row);
-    controls.push({field:f, control:ctrl});
+    row.style.display = f.is_visible ? '' : 'none';
+    controls.push({field:f, control:ctrl, row});
   });
 
-  const collectAnswers = ()=>controls.map(({field, control})=>{
-    let val;
-    if(control.tagName==='SELECT' && control.multiple){
-      val = Array.from(control.selectedOptions).map(o=>o.value);
-    } else if(control.type==='checkbox'){
-      val = control.checked;
-    } else {
-      val = control.value;
+  const visibilityConfig = resp.visibility || null;
+  const baseDefaults = {};
+  controls.forEach(({field, row})=>{
+    baseDefaults[field.code] = !field.default_hidden;
+    if(!visibilityConfig && field.default_hidden){
+      row.style.display = 'none';
     }
-    return {field_code: field.code, value: val};
   });
+  const sortedRules = visibilityConfig ? [...visibilityConfig.rules].sort((a,b)=> (a.priority - b.priority) || (a.id - b.id)) : [];
+
+  const isEmptyValue = val => val === null || val === undefined || (typeof val === 'string' && val.trim()==='') || (Array.isArray(val) && val.length===0);
+  const toNumber = val => {
+    if(val === null || val === undefined || val === '') return null;
+    if(typeof val === 'number') return val;
+    const num = Number(val);
+    return Number.isNaN(num) ? null : num;
+  };
+  const listFrom = val => {
+    if(Array.isArray(val)) return val.map(v=>String(v));
+    if(val === null || val === undefined || val === '') return [];
+    return String(val).split(',').map(s=>s.trim()).filter(Boolean);
+  };
+  const matchesLike = (actual, pattern, insensitive=false)=>{
+    const source = actual === null || actual === undefined ? '' : String(actual);
+    const rawPattern = pattern === null || pattern === undefined ? '' : String(pattern);
+    const escaped = rawPattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const regex = new RegExp('^' + escaped.replace(/%/g, '.*') + '$', insensitive?'i':'');
+    return regex.test(source);
+  };
+  const compareEquality = (actual, expected)=>{
+    if(Array.isArray(actual)){
+      if(expected === null || expected === undefined) return actual.length === 0;
+      if(Array.isArray(expected)){
+        const expectedStrings = expected.map(v=>String(v));
+        const actualStrings = actual.map(v=>String(v));
+        return expectedStrings.every(val=>actualStrings.includes(val));
+      }
+      return actual.map(v=>String(v)).includes(String(expected));
+    }
+    if(Array.isArray(expected)){
+      return expected.map(v=>String(v)).includes(String(actual));
+    }
+    if(typeof expected === 'boolean') return !!actual === expected;
+    if(actual === null || actual === undefined) return expected === null || expected === undefined || expected === '';
+    if(expected === null || expected === undefined) return actual === null || actual === undefined || actual === '';
+    const actualNum = toNumber(actual);
+    const expectedNum = toNumber(expected);
+    if(actualNum !== null && expectedNum !== null){
+      return actualNum === expectedNum;
+    }
+    return String(actual) === String(expected);
+  };
+  const listIncludes = (actual, expected)=>{
+    const actualList = listFrom(actual);
+    const expectedList = listFrom(expected);
+    if(!expectedList.length) return false;
+    return expectedList.some(val=>actualList.includes(val));
+  };
+
+  function readControlValue(field, control){
+    if(control.tagName==='SELECT' && control.multiple){
+      return Array.from(control.selectedOptions).map(o=>o.value);
+    }
+    if(control.type==='checkbox'){
+      return control.checked;
+    }
+    if(control.tagName==='SELECT'){
+      return control.value === '' ? null : control.value;
+    }
+    const raw = control.value ?? '';
+    if(field.data_type_code==='integer' || field.data_type_code==='decimal'){
+      const trimmed = raw.trim();
+      if(trimmed==='') return null;
+      const num = Number(trimmed);
+      return Number.isNaN(num) ? trimmed : num;
+    }
+    if(field.data_type_code==='boolean'){
+      if(raw==='') return null;
+      if(typeof raw === 'string'){
+        if(raw.toLowerCase()==='true') return true;
+        if(raw.toLowerCase()==='false') return false;
+      }
+      return raw;
+    }
+    if(field.data_type_code==='date' || field.data_type_code==='datetime'){
+      return raw || null;
+    }
+    return raw === '' ? null : raw;
+  }
+
+  function evaluateCondition(cond, values){
+    const actual = values[cond.field_code];
+    let expected;
+    if(cond.rhs_field_code){
+      expected = values[cond.rhs_field_code];
+    } else if(cond.value_bool !== null && cond.value_bool !== undefined){
+      expected = cond.value_bool;
+    } else if(cond.value_num !== null && cond.value_num !== undefined){
+      expected = cond.value_num;
+    } else if(cond.value_date){
+      expected = cond.value_date;
+    } else if(cond.option_code){
+      expected = cond.option_code;
+    } else if(cond.value_text){
+      expected = cond.value_text;
+    } else {
+      expected = null;
+    }
+
+    switch(cond.op_code){
+      case 'is_true': return !!actual === true;
+      case 'is_false': return !!actual === false;
+      case 'is_empty': return isEmptyValue(actual);
+      case 'not_empty': return !isEmptyValue(actual);
+      case 'eq': return compareEquality(actual, expected);
+      case 'ne': return !compareEquality(actual, expected);
+      case 'gt': {
+        const aNum = toNumber(actual); const eNum = toNumber(expected);
+        return aNum !== null && eNum !== null && aNum > eNum;
+      }
+      case 'gte': {
+        const aNum = toNumber(actual); const eNum = toNumber(expected);
+        return aNum !== null && eNum !== null && aNum >= eNum;
+      }
+      case 'lt': {
+        const aNum = toNumber(actual); const eNum = toNumber(expected);
+        return aNum !== null && eNum !== null && aNum < eNum;
+      }
+      case 'lte': {
+        const aNum = toNumber(actual); const eNum = toNumber(expected);
+        return aNum !== null && eNum !== null && aNum <= eNum;
+      }
+      case 'in':
+        return listIncludes(actual, expected);
+      case 'not_in':
+        return !listIncludes(actual, expected);
+      case 'like':
+        return matchesLike(actual, expected, false);
+      case 'ilike':
+        return matchesLike(actual, expected, true);
+      default:
+        return compareEquality(actual, expected);
+    }
+  }
+
+  function evaluateRule(rule, values){
+    if(!rule.conditions || !rule.conditions.length) return true;
+    const results = rule.conditions.map(cond=>evaluateCondition(cond, values));
+    return rule.logic_op === 'OR' ? results.some(Boolean) : results.every(Boolean);
+  }
+
+  function computeVisibility(values){
+    const state = {...baseDefaults};
+    if(visibilityConfig && visibilityConfig.defaults){
+      Object.assign(state, visibilityConfig.defaults);
+    }
+    if(visibilityConfig){
+      sortedRules.forEach(rule=>{
+        if(evaluateRule(rule, values)){
+          rule.targets.forEach(target=>{
+            if(rule.action_code==='show') state[target.field_code] = true;
+            else if(rule.action_code==='hide') state[target.field_code] = false;
+          });
+        }
+      });
+    }
+    return state;
+  }
+
+  function applyVisibility(initial=false){
+    const valueMap = visibilityConfig ? {...visibilityConfig.context_values} : {};
+    controls.forEach(({field, control})=>{
+      valueMap[field.code] = readControlValue(field, control);
+    });
+    const state = computeVisibility(valueMap);
+    if(initial && visibilityConfig && visibilityConfig.current){
+      Object.entries(visibilityConfig.current).forEach(([code, val])=>{
+        if(!(code in state)) state[code] = val;
+      });
+    }
+    controls.forEach(({field, row})=>{
+      const visible = state[field.code];
+      row.style.display = visible ? '' : 'none';
+    });
+  }
+
+  applyVisibility(true);
+  controls.forEach(({control})=>{
+    const handler = ()=>applyVisibility(false);
+    if(control.tagName==='SELECT'){
+      control.addEventListener('change', handler);
+    } else if(control.type==='checkbox'){
+      control.addEventListener('change', handler);
+    } else {
+      control.addEventListener('input', handler);
+      control.addEventListener('change', handler);
+    }
+  });
+
+  const collectAnswers = ()=>controls.map(({field, control})=>({
+    field_code: field.code,
+    value: readControlValue(field, control)
+  }));
 
   const actions = document.createElement('div'); actions.className='row wrap'; actions.style.gap='8px'; actions.style.marginTop='12px';
 
