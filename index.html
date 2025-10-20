@@ -234,7 +234,8 @@
             </div>
             <div class="segment">
               <div class="list-header">
-                <span>Новое правило</span>
+                <span>Редактор правила</span>
+                <span id="visEditState" class="muted">Создание нового правила</span>
               </div>
               <div class="row">
                 <label style="flex:1 1 180px">Действие<select id="vis_action"></select></label>
@@ -256,7 +257,9 @@
               <div class="toolbar">
                 <button class="btn ghost sm" id="btnAddVisCond" type="button">+ условие</button>
                 <span class="right"></span>
-                <button class="btn primary" id="btnCreateVisibilityRule" type="button">Создать правило</button>
+                <button class="btn ghost sm" id="btnResetVisibilityRule" type="button">Очистить</button>
+                <button class="btn ok sm" id="btnUpdateVisibilityRule" type="button">Сохранить изменения</button>
+                <button class="btn primary sm" id="btnCreateVisibilityRule" type="button">Создать правило</button>
               </div>
             </div>
           </div>
@@ -288,13 +291,16 @@
             </div>
             <div class="segment">
               <div class="list-header">
-                <span>Конструктор нового перехода</span>
+                <span>Редактор перехода</span>
+                <span id="trEditState" class="muted">Создание нового перехода</span>
               </div>
               <div id="condList" class="list"></div>
               <div class="toolbar">
                 <button class="btn ghost" id="btnAddCond">+ условие</button>
                 <span class="right"></span>
-                <button class="btn primary" id="btnCreateTransition">Создать переход</button>
+                <button class="btn ghost sm" id="btnResetTransition" type="button">Очистить</button>
+                <button class="btn ok" id="btnUpdateTransition" type="button">Сохранить изменения</button>
+                <button class="btn primary" id="btnCreateTransition" type="button">Создать переход</button>
               </div>
             </div>
           </div>
@@ -439,6 +445,10 @@ let FORM_CONDITION_FIELDS_FORM_ID = null;
 let CURRENT_INSPECTED_INSTANCE = null;
 let FORM_STEP_INDEX = {};
 let FLOW_ROUTES_CACHE = {};
+let VISIBILITY_RULES_CACHE = {};
+let CURRENT_VISIBILITY_RULE_ID = null;
+let CURRENT_ROUTE_ID = null;
+let CURRENT_ROUTE_META = null;
 
 /* Helpers */
 async function getJSON(url, opt={}){ const r=await fetch(url,opt); if(!r.ok){throw new Error(await r.text());} return r.json(); }
@@ -744,6 +754,7 @@ async function selectStep(stepId){
     el.classList.toggle('active', +el.dataset.stepId === stepId);
   });
   await refreshFields(stepId);
+  resetTransitionBuilder();
   await refreshRoutesList();
   await refreshVisibilityList();
   await resetVisibilityBuilder();
@@ -1041,6 +1052,12 @@ async function refreshTransitionFields(stepId = null){
     } else if(fields[0]){
       sel.value = fields[0].code;
     }
+    const row = sel.closest('.condition-row');
+    if(row){
+      const op = row.querySelector('.c_op')?.value || 'eq';
+      const field = fields.find(f=>f.code === sel.value) || null;
+      updateConditionValueControl(row, 'transition', field, op);
+    }
   });
   return fields;
 }
@@ -1077,6 +1094,223 @@ function resolveConditionValue(field, op, raw){
   }
   cond.value_text = trimmed;
   return cond;
+}
+
+function conditionScopeConfig(scope){
+  if(scope==='visibility') return {fieldClass:'v_field', opClass:'v_op', valueClass:'v_val'};
+  return {fieldClass:'c_field', opClass:'c_op', valueClass:'c_val'};
+}
+
+function getConditionInitialValue(condition, field, op){
+  if(!condition) return '';
+  if(condition.option_code !== null && condition.option_code !== undefined){
+    if(field && (field.input_type_code === 'multiselect' || op === 'in' || op === 'not_in')){
+      return String(condition.option_code).split(',').map(v=>v.trim()).filter(Boolean);
+    }
+    return String(condition.option_code);
+  }
+  if(condition.value_bool !== null && condition.value_bool !== undefined){
+    return condition.value_bool ? 'true' : 'false';
+  }
+  if(condition.value_num !== null && condition.value_num !== undefined){
+    return String(condition.value_num);
+  }
+  if(condition.value_date !== null && condition.value_date !== undefined){
+    return condition.value_date;
+  }
+  if(condition.value_text !== null && condition.value_text !== undefined){
+    return condition.value_text;
+  }
+  return '';
+}
+
+function createConditionValueControl(field, op, existingRaw, scope){
+  const {valueClass} = conditionScopeConfig(scope);
+  const rawValue = existingRaw ?? '';
+  const normalize = value => (value === undefined || value === null) ? '' : String(value);
+  if(field && (field.input_type_code === 'select' || field.input_type_code === 'multiselect')){
+    const control = document.createElement('select');
+    control.classList.add(valueClass);
+    const multi = field.input_type_code === 'multiselect' || op === 'in' || op === 'not_in';
+    if(multi){
+      control.multiple = true;
+      const size = Math.min(6, Math.max((field.options||[]).length, 3));
+      control.size = size;
+    } else {
+      control.appendChild(opt('', '— выберите —'));
+    }
+    (field.options || []).forEach(o=> control.appendChild(opt(o.value_code, o.value_label)));
+    if(Array.isArray(rawValue)){
+      rawValue.forEach(val=>{
+        const option = Array.from(control.options).find(o=>o.value === normalize(val));
+        if(option) option.selected = true;
+      });
+    } else if(rawValue){
+      control.value = normalize(rawValue);
+    }
+    return control;
+  }
+  if(field && field.data_type_code === 'boolean'){
+    const control = document.createElement('select');
+    control.classList.add(valueClass);
+    control.appendChild(opt('', '— выберите —'));
+    control.appendChild(opt('true', 'Да'));
+    control.appendChild(opt('false', 'Нет'));
+    if(rawValue){ control.value = normalize(rawValue); }
+    return control;
+  }
+  if(field && (field.data_type_code === 'integer' || field.data_type_code === 'decimal')){
+    const control = document.createElement('input');
+    control.type = 'number';
+    control.classList.add(valueClass);
+    if(field.data_type_code === 'decimal') control.step = 'any';
+    if(rawValue){ control.value = normalize(rawValue); }
+    return control;
+  }
+  if(field && field.data_type_code === 'date'){
+    const control = document.createElement('input');
+    control.type = 'date';
+    control.classList.add(valueClass);
+    if(rawValue){ control.value = normalize(rawValue); }
+    return control;
+  }
+  if(field && field.data_type_code === 'datetime'){
+    const control = document.createElement('input');
+    control.type = 'datetime-local';
+    control.classList.add(valueClass);
+    if(rawValue){ control.value = normalize(rawValue); }
+    return control;
+  }
+  const control = document.createElement('input');
+  control.type = 'text';
+  control.placeholder = 'value / option_code / true|false';
+  control.classList.add(valueClass);
+  if(Array.isArray(rawValue)){
+    control.value = rawValue.join(',');
+  } else if(rawValue){
+    control.value = normalize(rawValue);
+  }
+  return control;
+}
+
+function readConditionControlValue(row, scope){
+  const {valueClass} = conditionScopeConfig(scope);
+  const control = row.querySelector(`.${valueClass}`);
+  if(!control) return '';
+  if(control.tagName === 'SELECT'){
+    if(control.multiple){
+      return Array.from(control.selectedOptions).map(o=>o.value).filter(Boolean).join(',');
+    }
+    return control.value || '';
+  }
+  if(control.type === 'checkbox'){
+    return control.checked ? 'true' : '';
+  }
+  return control.value || '';
+}
+
+function lookupConditionField(scope, code){
+  if(!code) return null;
+  if(scope === 'visibility'){
+    return (FORM_CONDITION_FIELDS || []).find(f=>f.code === code) || null;
+  }
+  if(scope === 'transition'){
+    const sourceId = +$('#tr_src').value;
+    const fields = getTransitionFields(sourceId) || [];
+    return fields.find(f=>f.code === code) || null;
+  }
+  return null;
+}
+
+function updateConditionValueControl(row, scope, field, op, presetRaw){
+  const slot = row.querySelector('.cond-value-slot');
+  if(!slot) return;
+  const raw = presetRaw !== undefined ? presetRaw : readConditionControlValue(row, scope);
+  slot.innerHTML = '';
+  const control = createConditionValueControl(field, op, raw, scope);
+  slot.appendChild(control);
+}
+
+function attachConditionRowHandlers(row, scope){
+  const {fieldClass, opClass} = conditionScopeConfig(scope);
+  const fieldSelect = row.querySelector(`.${fieldClass}`);
+  const opSelect = row.querySelector(`.${opClass}`);
+  if(fieldSelect){
+    fieldSelect.addEventListener('change', ()=>{
+      const field = lookupConditionField(scope, fieldSelect.value);
+      const op = opSelect ? opSelect.value : 'eq';
+      updateConditionValueControl(row, scope, field, op);
+    });
+  }
+  if(opSelect){
+    opSelect.addEventListener('change', ()=>{
+      const field = fieldSelect ? lookupConditionField(scope, fieldSelect.value) : null;
+      updateConditionValueControl(row, scope, field, opSelect.value);
+    });
+  }
+}
+
+function ensureConditionFieldOption(fieldSelect, condition, label){
+  if(!condition || !condition.field_code) return;
+  const exists = Array.from(fieldSelect.options).some(o=>o.value === condition.field_code);
+  if(!exists){
+    fieldSelect.append(opt(condition.field_code, label || condition.field_code));
+  }
+}
+
+function createConditionRow(scope, fields, condition=null){
+  const cfg = conditionScopeConfig(scope);
+  const row = document.createElement('div');
+  row.className = 'row item condition-row';
+
+  const fieldLabel = document.createElement('label');
+  fieldLabel.style.flex = '2 1 240px';
+  fieldLabel.append('Поле');
+  const fieldSelect = document.createElement('select');
+  fieldSelect.classList.add(cfg.fieldClass);
+  if(!fields.length && condition?.field_code){
+    ensureConditionFieldOption(fieldSelect, condition, condition.field_title || condition.field_code);
+  }
+  fields.forEach(f=>{
+    const prefix = f.step_title ? `${f.step_title} › ` : '';
+    fieldSelect.append(opt(f.code, `${prefix}${f.title} (${f.code})`));
+  });
+  fieldLabel.appendChild(fieldSelect);
+  row.appendChild(fieldLabel);
+
+  const opLabel = document.createElement('label');
+  opLabel.style.flex = '1 1 160px';
+  opLabel.append('Оператор');
+  const opSelect = document.createElement('select');
+  opSelect.classList.add(cfg.opClass);
+  (cache.ops || []).forEach(o=> opSelect.append(opt(o.code, o.title)));
+  opLabel.appendChild(opSelect);
+  row.appendChild(opLabel);
+
+  const valueLabel = document.createElement('label');
+  valueLabel.style.flex = '2 1 240px';
+  valueLabel.innerHTML = 'Значение<div class="cond-value-slot"></div>';
+  row.appendChild(valueLabel);
+
+  const removeBtn = document.createElement('button');
+  removeBtn.className = 'btn error';
+  removeBtn.type = 'button';
+  removeBtn.textContent = '×';
+  removeBtn.onclick = ()=> row.remove();
+  row.appendChild(removeBtn);
+
+  if(condition?.field_code && (fields.some(f=>f.code===condition.field_code) || fieldSelect.querySelector(`option[value="${condition.field_code}"]`))){
+    fieldSelect.value = condition.field_code;
+  }
+  if(condition?.op_code){
+    opSelect.value = condition.op_code;
+  }
+
+  const selectedField = lookupConditionField(scope, fieldSelect.value) || fields.find(f=>f.code===fieldSelect.value) || null;
+  const initialRaw = getConditionInitialValue(condition, selectedField, opSelect.value);
+  updateConditionValueControl(row, scope, selectedField, opSelect.value, initialRaw);
+  attachConditionRowHandlers(row, scope);
+  return row;
 }
 
 function getVisibilityTargetCodes(){
@@ -1138,40 +1372,61 @@ function addVisibilityTarget(code){
 }
 
 async function resetVisibilityBuilder(){
+  CURRENT_VISIBILITY_RULE_ID = null;
   $('#vis_priority').value = 100;
   $('#vis_logic').value = 'AND';
   $('#vis_description').value = '';
+  const actionSelect = $('#vis_action');
+  if(actionSelect && actionSelect.options.length){ actionSelect.selectedIndex = 0; }
   const targets = $('#visTargets');
   if(targets){ targets.innerHTML=''; }
   const condList = $('#visCondList');
   if(condList){ condList.innerHTML=''; }
   populateVisibilityTargetSelect();
   ensureVisibilityTargetsPlaceholder();
+  $$('#visibilityList .item').forEach(el=> el.classList.remove('active'));
+  updateVisibilityEditState();
   await ensureConditionFieldsLoaded();
 }
 
-async function addVisibilityConditionRow(){
+function updateVisibilityEditState(){
+  const badge = $('#visEditState');
+  if(!badge) return;
+  if(CURRENT_VISIBILITY_RULE_ID){
+    badge.textContent = `Редактирование правила #${CURRENT_VISIBILITY_RULE_ID}`;
+  } else {
+    badge.textContent = 'Создание нового правила';
+  }
+}
+
+function resetTransitionBuilder(){
+  CURRENT_ROUTE_ID = null;
+  CURRENT_ROUTE_META = null;
+  $('#tr_prio').value = 100;
+  $('#tr_logic').value = 'AND';
+  const dst = $('#tr_dst');
+  if(dst && dst.options.length){ dst.selectedIndex = 0; }
+  const condList = $('#condList');
+  if(condList){ condList.innerHTML=''; }
+  $$('#routesList .item').forEach(el=> el.classList.remove('active'));
+  updateTransitionEditState();
+}
+
+function updateTransitionEditState(){
+  const badge = $('#trEditState');
+  if(!badge) return;
+  if(CURRENT_ROUTE_ID){
+    badge.textContent = `Редактирование перехода #${CURRENT_ROUTE_ID}`;
+  } else {
+    badge.textContent = 'Создание нового перехода';
+  }
+}
+
+async function addVisibilityConditionRow(condition=null){
   const fields = await ensureConditionFieldsLoaded();
   if(!fields.length){ toast('Не удалось загрузить поля формы','warn'); return; }
-  const wrap = document.createElement('div'); wrap.className='row item';
-  const fieldOptions = fields.map(f=>{
-    const prefix = f.step_title ? `${f.step_title} › ` : '';
-    return `<option value="${f.code}">${prefix}${f.title} (${f.code})</option>`;
-  }).join('');
-  const opOptions = cache.ops.map(o=>`<option value="${o.code}">${o.title}</option>`).join('');
-  wrap.innerHTML = `
-    <label style="flex:2 1 240px">Поле
-      <select class="v_field">${fieldOptions}</select>
-    </label>
-    <label style="flex:1 1 160px">Оператор
-      <select class="v_op">${opOptions}</select>
-    </label>
-    <label style="flex:2 1 240px">Значение
-      <input class="v_val" type="text" placeholder="value / option_code / true|false"/>
-    </label>
-    <button class="btn error" type="button">×</button>`;
-  wrap.querySelector('button').onclick = ()=>{ wrap.remove(); };
-  $('#visCondList').append(wrap);
+  const row = createConditionRow('visibility', fields, condition);
+  $('#visCondList').append(row);
 }
 
 async function refreshFlowRoutes(){
@@ -1343,6 +1598,9 @@ async function refreshRoutesList(){
     list.innerHTML = `<div class="item muted">Ошибка: ${e.message}</div>`; return [];
   });
   FLOW_ROUTES_CACHE[stepId] = routes;
+  if(CURRENT_ROUTE_ID && !routes.some(route=>route.id === CURRENT_ROUTE_ID)){
+    resetTransitionBuilder();
+  }
   if(!routes.length){
     list.innerHTML = '<div class="item muted">Переходы отсутствуют</div>';
     renderFlowDesigner();
@@ -1352,16 +1610,118 @@ async function refreshRoutesList(){
   routes.forEach(route=>{
     const target = cache.steps.find(s=>s.id===route.target_step_id);
     const title = target ? `${target.title} (${target.code})` : `#${route.target_step_id}`;
-    const item = document.createElement('div'); item.className='item';
+    const item = document.createElement('div');
+    const isActive = route.id === CURRENT_ROUTE_ID;
+    item.className = `item clickable${isActive?' active':''}`;
+    item.dataset.routeId = route.id;
     item.innerHTML = `
       <div class="row" style="justify-content:space-between"><strong>${title}</strong><span class="muted">prio ${route.priority}</span></div>
       <div class="muted">Логика: ${route.logic_op}${route.scenario_description?` • ${route.scenario_description}`:''}</div>
       ${route.description?`<div class="muted">${route.description}</div>`:''}
       ${renderConditionsList(route.conditions)}
     `;
+    item.onclick = ()=> selectTransition(route.id);
     list.appendChild(item);
   });
   renderFlowDesigner();
+}
+
+async function selectVisibilityRule(ruleOrId){
+  const stepId = CURRENT_STEP_ID || +$('#fld_step').value;
+  const rule = typeof ruleOrId === 'object'
+    ? ruleOrId
+    : (VISIBILITY_RULES_CACHE[stepId] || []).find(r=>r.id === ruleOrId);
+  if(!rule) return;
+  CURRENT_VISIBILITY_RULE_ID = rule.id;
+  const actionSelect = $('#vis_action');
+  if(actionSelect){
+    const exists = Array.from(actionSelect.options).some(o=>o.value === rule.action_code);
+    if(!exists){
+      actionSelect.append(opt(rule.action_code, rule.action_title || rule.action_code));
+    }
+    actionSelect.value = rule.action_code;
+  }
+  $('#vis_priority').value = rule.priority;
+  $('#vis_logic').value = rule.logic_op;
+  $('#vis_description').value = rule.scenario_description || '';
+  const targetsWrap = $('#visTargets');
+  if(targetsWrap){
+    targetsWrap.innerHTML='';
+    const orderedTargets = (rule.targets || []).slice().sort((a,b)=> (a.sort_order - b.sort_order) || (a.field_id - b.field_id));
+    const fieldsOnStep = FORM_FIELDS_CACHE || [];
+    orderedTargets.forEach(t=>{
+      if(fieldsOnStep.some(f=>f.code === t.field_code)){
+        addVisibilityTarget(t.field_code);
+      } else {
+        const pill = document.createElement('span');
+        pill.className = 'target-pill';
+        pill.dataset.code = t.field_code;
+        pill.textContent = `${t.field_title || t.field_code}`;
+        const btn = document.createElement('button');
+        btn.type='button';
+        btn.textContent='×';
+        btn.onclick = ()=>{
+          pill.remove();
+          populateVisibilityTargetSelect();
+          ensureVisibilityTargetsPlaceholder();
+        };
+        pill.appendChild(btn);
+        targetsWrap.appendChild(pill);
+      }
+    });
+  }
+  const condList = $('#visCondList');
+  if(condList){ condList.innerHTML=''; }
+  await ensureConditionFieldsLoaded();
+  const orderedConditions = (rule.conditions || []).slice().sort((a,b)=> (a.position - b.position) || (a.id - b.id));
+  for(const cond of orderedConditions){
+    await addVisibilityConditionRow(cond);
+  }
+  populateVisibilityTargetSelect();
+  ensureVisibilityTargetsPlaceholder();
+  $$('#visibilityList .item').forEach(el=> el.classList.toggle('active', +el.dataset.ruleId === rule.id));
+  updateVisibilityEditState();
+}
+
+async function selectTransition(routeOrId){
+  const stepId = CURRENT_STEP_ID || +$('#fld_step').value;
+  const route = typeof routeOrId === 'object'
+    ? routeOrId
+    : (FLOW_ROUTES_CACHE[stepId] || []).find(r=>r.id === routeOrId);
+  if(!route) return;
+  CURRENT_ROUTE_ID = route.id;
+  CURRENT_ROUTE_META = {
+    description: route.description || null,
+    scenario_description: route.scenario_description || null,
+  };
+  $('#tr_src').value = route.source_step_id;
+  const fields = await refreshTransitionFields(route.source_step_id);
+  const dstSelect = $('#tr_dst');
+  if(dstSelect){
+    const exists = Array.from(dstSelect.options).some(o=>+o.value === route.target_step_id);
+    if(!exists){
+      const targetStep = cache.steps.find(s=>s.id===route.target_step_id);
+      const label = targetStep ? targetStep.title : `#${route.target_step_id}`;
+      dstSelect.append(opt(route.target_step_id, label));
+    }
+    dstSelect.value = route.target_step_id;
+  }
+  $('#tr_prio').value = route.priority;
+  $('#tr_logic').value = route.logic_op;
+  const condList = $('#condList');
+  if(condList){ condList.innerHTML=''; }
+  const orderedConditions = (route.conditions || []).slice().sort((a,b)=> (a.position - b.position) || (a.id - b.id));
+  if(orderedConditions.length){
+    orderedConditions.forEach(cond=>{
+      const row = createConditionRow('transition', fields, cond);
+      $('#condList').append(row);
+    });
+  } else {
+    const row = createConditionRow('transition', fields, null);
+    $('#condList').append(row);
+  }
+  $$('#routesList .item').forEach(el=> el.classList.toggle('active', +el.dataset.routeId === route.id));
+  updateTransitionEditState();
 }
 
 async function refreshVisibilityList(){
@@ -1373,19 +1733,27 @@ async function refreshVisibilityList(){
   const rules = await getJSON(`${API}/admin/forms/${formId}/steps/${stepId}/visibility`).catch(e=>{
     list.innerHTML = `<div class="item muted">Ошибка: ${e.message}</div>`; return [];
   });
+  VISIBILITY_RULES_CACHE[stepId] = rules;
+  if(CURRENT_VISIBILITY_RULE_ID && !rules.some(rule=>rule.id === CURRENT_VISIBILITY_RULE_ID)){
+    await resetVisibilityBuilder();
+  }
   if(!rules.length){ list.innerHTML = '<div class="item muted">Правила отсутствуют</div>'; return; }
   list.innerHTML='';
   rules.forEach(rule=>{
     const targets = rule.targets && rule.targets.length
       ? rule.targets.map(t=>`<span class="pill">${t.field_title || t.field_code}</span>`).join(' ')
       : '<span class="muted">—</span>';
-    const item = document.createElement('div'); item.className='item';
+    const item = document.createElement('div');
+    const isActive = rule.id === CURRENT_VISIBILITY_RULE_ID;
+    item.className = `item clickable${isActive?' active':''}`;
+    item.dataset.ruleId = rule.id;
     item.innerHTML = `
       <div class="row" style="justify-content:space-between"><strong>${rule.action_title || rule.action_code}</strong><span class="muted">prio ${rule.priority}</span></div>
       <div class="muted">Логика: ${rule.logic_op}${rule.scenario_description?` • ${rule.scenario_description}`:''}</div>
       <div class="muted">Поля: ${targets}</div>
       ${renderConditionsList(rule.conditions)}
     `;
+    item.onclick = ()=> selectVisibilityRule(rule.id);
     list.appendChild(item);
   });
 }
@@ -1448,22 +1816,8 @@ $('#btnAddCond').onclick = async ()=>{
     fields = await refreshTransitionFields(sourceId);
   }
   if(!fields.length){ toast('В выбранном шаге нет полей для условий','warn'); return; }
-  const wrap=document.createElement('div'); wrap.className='row item';
-  const fieldOptions = fields.map(f=>`<option value="${f.code}">${f.title} (${f.code})</option>`).join('');
-  const opOptions = cache.ops.map(o=>`<option value="${o.code}">${o.title}</option>`).join('');
-  wrap.innerHTML = `
-    <label style="flex:2 1 260px">Поле
-      <select class="c_field">${fieldOptions}</select>
-    </label>
-    <label style="flex:1 1 160px">Оператор
-      <select class="c_op">${opOptions}</select>
-    </label>
-    <label style="flex:2 1 260px">Значение
-      <input class="c_val" type="text" placeholder="value / option_code / true|false"/>
-    </label>
-    <button class="btn error" type="button">×</button>`;
-  wrap.querySelector('button').onclick = ()=> wrap.remove();
-  $('#condList').append(wrap);
+  const row = createConditionRow('transition', fields, null);
+  $('#condList').append(row);
 };
 
 $('#btnAddVisTarget').onclick = ()=>{
@@ -1476,11 +1830,12 @@ $('#btnAddVisTarget').onclick = ()=>{
 
 $('#btnAddVisCond').onclick = ()=> addVisibilityConditionRow();
 
-$('#btnCreateVisibilityRule').onclick = async ()=>{
+async function collectVisibilityPayload(){
   const formId = CURRENT_FORM_ID || +$('#formsSelect').value;
   const stepId = CURRENT_STEP_ID || +$('#fld_step').value;
-  if(!formId || !stepId){ toast('Выберите шаг формы','warn'); return; }
+  if(!formId || !stepId){ toast('Выберите шаг формы','warn'); return null; }
   const action = $('#vis_action').value;
+  if(!action){ toast('Выберите действие','warn'); return null; }
   const priority = +$('#vis_priority').value || 100;
   const logic = $('#vis_logic').value;
   const description = $('#vis_description').value.trim();
@@ -1488,15 +1843,15 @@ $('#btnCreateVisibilityRule').onclick = async ()=>{
     field_code: pill.dataset.code,
     sort_order: (idx + 1) * 10
   }));
-  if(!targets.length){ toast('Добавьте хотя бы одно целевое поле','warn'); return; }
+  if(!targets.length){ toast('Добавьте хотя бы одно целевое поле','warn'); return null; }
   const rows = $$('#visCondList .row');
   const fields = await ensureConditionFieldsLoaded();
-  const conditions = rows.map(row=>{
+  const conditions = rows.map((row, idx)=>{
     const fieldCode = row.querySelector('.v_field').value;
     const op = row.querySelector('.v_op').value;
-    const raw = row.querySelector('.v_val').value || '';
+    const raw = readConditionControlValue(row, 'visibility');
     const field = fields.find(f=>f.code===fieldCode) || {};
-    const cond = {field_code:fieldCode, op_code:op, value_text:null, value_num:null, value_bool:null, value_date:null, option_code:null};
+    const cond = {field_code:fieldCode, op_code:op, value_text:null, value_num:null, value_bool:null, value_date:null, option_code:null, position:(idx+1)*10};
     Object.assign(cond, resolveConditionValue(field, op, raw));
     return cond;
   });
@@ -1510,6 +1865,14 @@ $('#btnCreateVisibilityRule').onclick = async ()=>{
     conditions
   };
 
+  return {formId, stepId, payload};
+}
+
+$('#btnCreateVisibilityRule').onclick = async ()=>{
+  const data = await collectVisibilityPayload();
+  if(!data) return;
+  const {formId, stepId, payload} = data;
+
   const r = await getJSON(`${API}/admin/forms/${formId}/steps/${stepId}/visibility`, {
     method:'POST',
     headers:{'Content-Type':'application/json'},
@@ -1522,49 +1885,109 @@ $('#btnCreateVisibilityRule').onclick = async ()=>{
   }
 };
 
+$('#btnUpdateVisibilityRule').onclick = async ()=>{
+  if(!CURRENT_VISIBILITY_RULE_ID){ toast('Выберите правило для редактирования','warn'); return; }
+  const data = await collectVisibilityPayload();
+  if(!data) return;
+  const {formId, stepId, payload} = data;
+  const url = `${API}/admin/forms/${formId}/steps/${stepId}/visibility/${CURRENT_VISIBILITY_RULE_ID}`;
+  const r = await getJSON(url, {
+    method:'PUT',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(payload)
+  }).catch(e=>{ toast(e.message,'err'); return null; });
+  if(r){
+    toast('Правило видимости обновлено','ok');
+    await refreshVisibilityList();
+    await selectVisibilityRule(r.id);
+  }
+};
+
+$('#btnResetVisibilityRule').onclick = ()=>{ resetVisibilityBuilder(); };
+
 $('#tr_src').onchange = async ()=>{
   const stepId = +$('#tr_src').value;
   if(stepId){
-    await refreshTransitionFields(stepId);
-    $$('#condList .row .c_val').forEach(input=>{ input.value=''; });
+    const fields = await refreshTransitionFields(stepId);
+    $$('#condList .condition-row').forEach(row=>{
+      const fieldSelect = row.querySelector('.c_field');
+      if(!fieldSelect) return;
+      if(!fields.some(f=>f.code===fieldSelect.value) && fields[0]){
+        fieldSelect.value = fields[0].code;
+      }
+      const field = fields.find(f=>f.code===fieldSelect.value) || null;
+      const op = row.querySelector('.c_op')?.value || 'eq';
+      updateConditionValueControl(row, 'transition', field, op);
+    });
   }
 };
 
 $('#btnCreateTransition').onclick = async ()=>{
-  const formId = +$('#formsSelect').value;
+async function collectTransitionPayload({useExistingMeta=false}={}){
+  const formId = CURRENT_FORM_ID || +$('#formsSelect').value;
   const sourceId = +$('#tr_src').value;
-  if(!formId || !sourceId){ toast('Выберите форму и источник перехода','warn'); return; }
+  if(!formId || !sourceId){ toast('Выберите форму и источник перехода','warn'); return null; }
   const targetId = +$('#tr_dst').value;
-  await refreshTransitionFields(sourceId);
-  const fields = getTransitionFields(sourceId);
+  if(!targetId){ toast('Выберите целевой шаг','warn'); return null; }
+  const fields = await refreshTransitionFields(sourceId);
+  if(!fields.length){ toast('В выбранном шаге нет полей для условий','warn'); return null; }
   const rows = $$('#condList .row');
-  const conditions = rows.map(r=>{
+  const conditions = rows.map((r, idx)=>{
     const op = r.querySelector('.c_op').value;
     const fieldCode = r.querySelector('.c_field').value;
-    const raw = r.querySelector('.c_val').value || '';
+    const raw = readConditionControlValue(r, 'transition');
     const field = fields.find(x=>x.code===fieldCode) || {};
-    const cond = {field_code:fieldCode, op_code:op, value_text:null, value_num:null, value_bool:null, value_date:null, option_code:null};
+    const cond = {field_code:fieldCode, op_code:op, value_text:null, value_num:null, value_bool:null, value_date:null, option_code:null, position:(idx+1)*10};
     Object.assign(cond, resolveConditionValue(field, op, raw));
     return cond;
   });
-
+  const priority = +$('#tr_prio').value || 100;
+  const logic = $('#tr_logic').value;
+  const description = useExistingMeta && CURRENT_ROUTE_META ? (CURRENT_ROUTE_META.description ?? null) : 'UI transition';
+  const scenario = useExistingMeta && CURRENT_ROUTE_META ? CURRENT_ROUTE_META.scenario_description ?? null : null;
   const payload = {
-    source_step_id: sourceId,
     target_step_id: targetId,
-    priority: +$('#tr_prio').value || 100,
-    description: 'UI transition',
-    logic_op: $('#tr_logic').value,
-    conditions
+    priority,
+    description,
+    logic_op: logic,
+    conditions,
+    scenario_description: scenario
   };
+  return {formId, sourceId, payload};
+}
 
-  const r = await getJSON(`${API}/admin/forms/${formId}/transitions`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)}).catch(e=>toast(e.message,'err'));
+$('#btnCreateTransition').onclick = async ()=>{
+  const data = await collectTransitionPayload();
+  if(!data) return;
+  const {formId, sourceId, payload} = data;
+  const r = await getJSON(`${API}/admin/forms/${formId}/steps/${sourceId}/routes`, {
+    method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)
+  }).catch(e=>{ toast(e.message,'err'); return null; });
   if(r){
     toast(`Создан переход #${r.id} (${r.logic_op})`,'ok');
-    $('#condList').innerHTML='';
+    resetTransitionBuilder();
     await refreshRoutesList();
     await refreshFlowRoutes();
   }
 };
+
+$('#btnUpdateTransition').onclick = async ()=>{
+  if(!CURRENT_ROUTE_ID){ toast('Выберите переход для редактирования','warn'); return; }
+  const data = await collectTransitionPayload({useExistingMeta:true});
+  if(!data) return;
+  const {formId, payload} = data;
+  const r = await getJSON(`${API}/admin/forms/${formId}/routes/${CURRENT_ROUTE_ID}`, {
+    method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)
+  }).catch(e=>{ toast(e.message,'err'); return null; });
+  if(r){
+    toast(`Переход #${r.id} обновлён`,'ok');
+    await refreshRoutesList();
+    await refreshFlowRoutes();
+    await selectTransition(r.id);
+  }
+};
+
+$('#btnResetTransition').onclick = ()=>{ resetTransitionBuilder(); };
 
 /* USER runtime */
 
