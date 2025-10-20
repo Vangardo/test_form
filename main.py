@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import uvicorn
 from fastapi import FastAPI, HTTPException, Depends, Body, status
 from pydantic import BaseModel, Field, model_validator
