@@ -415,7 +415,7 @@ class StepRouteBase(BaseModel):
     description: Optional[str] = None
     scenario_description: Optional[str] = None
     logic_op: str = "AND"
-    conditions: List[ConditionCreate] = []
+    conditions: List[ConditionCreate] = Field(default_factory=list)
 
 
 class StepRouteCreate(StepRouteBase):
@@ -430,6 +430,7 @@ class StepRouteRead(StepRouteBase):
     id: int
     form_id: int
     source_step_id: int
+    conditions: List[ConditionRead] = Field(default_factory=list)
 
 
 class InstanceSummary(BaseModel):
@@ -467,8 +468,8 @@ class InstanceDetail(BaseModel):
     started_at: Any
     updated_at: Any
     steps: List[InstanceStepAnswers] = Field(default_factory=list)
-    condition_group_id: int
-    conditions: List[ConditionRead]
+    condition_group_id: Optional[int] = None
+    conditions: List[ConditionRead] = Field(default_factory=list)
 
 
 # --- Универсальные справочные строки ---
@@ -1602,7 +1603,12 @@ async def _save_answers(instance_id: int, step_id: int, answers: List[Answer]):
             if data_type == 'boolean':
                 value_bool = bool(raw_value) if raw_value is not None else None
             elif data_type in ('integer', 'decimal'):
-                value_num = float(raw_value) if raw_value is not None else None
+                if raw_value is not None:
+                    try:
+                        value_num = float(raw_value)
+                    except (TypeError, ValueError):
+                        value_text = str(raw_value)
+                # оставляем value_num = None, если конвертация не удалась
             elif data_type in ('date', 'datetime'):
                 value_date = raw_value
             else:
