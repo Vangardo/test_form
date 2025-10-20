@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, Depends, Body, status
+from fastapi import FastAPI, HTTPException, Depends, Body, status, Response
 from pydantic import BaseModel, Field, model_validator
 from typing import List, Any, Dict, Optional, Tuple
 import databases
@@ -59,6 +59,17 @@ async def _get_field_id_by_code(form_id: int, field_code: str) -> int:
     row = await database.fetch_one(query, {"form_id": form_id, "field_code": field_code})
     if not row:
         raise HTTPException(status_code=404, detail=f"Поле с кодом '{field_code}' не найдено в форме {form_id}")
+    return row.id
+
+
+async def _get_field_id_in_step(step_id: int, field_code: str) -> int:
+    """Находит Field ID по коду в рамках конкретного шага."""
+    row = await database.fetch_one(
+        "SELECT id FROM step_fields WHERE step_id = :step_id AND code = :code",
+        {"step_id": step_id, "code": field_code}
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail=f"Поле с кодом '{field_code}' не найдено на шаге {step_id}")
     return row.id
 
 
@@ -390,10 +401,32 @@ class ConditionRead(ConditionBase):
     op_title: str
 
 
+class VisibilityTargetCreate(BaseModel):
+    field_code: str
+    sort_order: int = 100
+
+
 class VisibilityTargetRead(BaseModel):
     field_code: str
     field_title: str
     sort_order: int
+
+
+class VisibilityRuleBase(BaseModel):
+    priority: int = 100
+    action_code: str
+    scenario_description: Optional[str] = None
+    logic_op: str = "AND"
+    conditions: List[ConditionCreate] = Field(default_factory=list)
+    targets: List[VisibilityTargetCreate] = Field(default_factory=list)
+
+
+class VisibilityRuleCreate(VisibilityRuleBase):
+    pass
+
+
+class VisibilityRuleUpdate(VisibilityRuleBase):
+    pass
 
 
 class VisibilityRuleRead(BaseModel):
@@ -913,6 +946,229 @@ async def list_visibility_rules(form_id: int, step_id: int):
     for row in rows:
         result.append(await _fetch_visibility_rule(row.id))
     return result
+
+
+@app.post(
+    "/admin/forms/{form_id}/steps/{step_id}/visibility",
+    response_model=VisibilityRuleRead,
+    status_code=status.HTTP_201_CREATED,
+    tags=["Admin - Fields"]
+)
+async def create_visibility_rule(form_id: int, step_id: int, rule: VisibilityRuleCreate):
+    await _ensure_step_in_form(form_id, step_id)
+
+    if not rule.targets:
+        raise HTTPException(status_code=400, detail="Правило должно содержать хотя бы одно целевое поле")
+
+    action_id = await _get_id_by_code("visibility_actions", rule.action_code)
+
+    async with database.transaction():
+        group_id = await database.fetch_val(
+            """
+                INSERT INTO condition_groups (form_id, logic_op, description)
+                VALUES (:form_id, :logic_op, :description)
+                RETURNING id
+            """,
+            {
+                "form_id": form_id,
+                "logic_op": rule.logic_op,
+                "description": rule.scenario_description,
+            }
+        )
+
+        for cond in rule.conditions:
+            field_id = await _get_field_id_by_code(form_id, cond.field_code)
+            op_id = await _get_id_by_code("compare_ops", cond.op_code)
+            rhs_field_id = None
+            if cond.rhs_field_code:
+                rhs_field_id = await _get_field_id_by_code(form_id, cond.rhs_field_code)
+
+            await database.execute(
+                """
+                    INSERT INTO conditions (
+                        group_id, field_id, op_id, value_text, value_num, value_bool, value_date,
+                        option_code, rhs_field_id, position
+                    )
+                    VALUES (
+                        :gid, :fid, :opid, :v_txt, :v_num, :v_bool, :v_date,
+                        :v_opt, :rhs_id, :position
+                    )
+                """,
+                {
+                    "gid": group_id,
+                    "fid": field_id,
+                    "opid": op_id,
+                    "v_txt": cond.value_text,
+                    "v_num": cond.value_num,
+                    "v_bool": cond.value_bool,
+                    "v_date": cond.value_date,
+                    "v_opt": cond.option_code,
+                    "rhs_id": rhs_field_id,
+                    "position": cond.position,
+                }
+            )
+
+        rule_id = await database.fetch_val(
+            """
+                INSERT INTO field_visibility_rules (step_id, condition_group_id, action_id, priority)
+                VALUES (:step_id, :group_id, :action_id, :priority)
+                RETURNING id
+            """,
+            {
+                "step_id": step_id,
+                "group_id": group_id,
+                "action_id": action_id,
+                "priority": rule.priority,
+            }
+        )
+
+        for target in rule.targets:
+            target_field_id = await _get_field_id_in_step(step_id, target.field_code)
+            await database.execute(
+                """
+                    INSERT INTO visibility_targets (visibility_rule_id, field_id, sort_order)
+                    VALUES (:rule_id, :field_id, :sort_order)
+                """,
+                {
+                    "rule_id": rule_id,
+                    "field_id": target_field_id,
+                    "sort_order": target.sort_order,
+                }
+            )
+
+    return await _fetch_visibility_rule(rule_id)
+
+
+@app.put(
+    "/admin/forms/{form_id}/steps/{step_id}/visibility/{rule_id}",
+    response_model=VisibilityRuleRead,
+    tags=["Admin - Fields"]
+)
+async def update_visibility_rule(form_id: int, step_id: int, rule_id: int, rule: VisibilityRuleUpdate):
+    await _ensure_step_in_form(form_id, step_id)
+
+    if not rule.targets:
+        raise HTTPException(status_code=400, detail="Правило должно содержать хотя бы одно целевое поле")
+
+    row = await database.fetch_one(
+        """
+            SELECT r.condition_group_id
+            FROM field_visibility_rules r
+            JOIN form_steps s ON r.step_id = s.id
+            WHERE r.id = :rule_id AND r.step_id = :step_id AND s.form_id = :form_id
+        """,
+        {"rule_id": rule_id, "step_id": step_id, "form_id": form_id}
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail=f"Правило видимости {rule_id} не найдено для шага {step_id}")
+
+    action_id = await _get_id_by_code("visibility_actions", rule.action_code)
+
+    async with database.transaction():
+        await database.execute(
+            "UPDATE field_visibility_rules SET action_id = :action_id, priority = :priority WHERE id = :rule_id",
+            {"action_id": action_id, "priority": rule.priority, "rule_id": rule_id}
+        )
+
+        await database.execute(
+            "UPDATE condition_groups SET logic_op = :logic_op, description = :description WHERE id = :group_id",
+            {
+                "logic_op": rule.logic_op,
+                "description": rule.scenario_description,
+                "group_id": row.condition_group_id,
+            }
+        )
+
+        await database.execute(
+            "DELETE FROM conditions WHERE group_id = :group_id",
+            {"group_id": row.condition_group_id}
+        )
+
+        for cond in rule.conditions:
+            field_id = await _get_field_id_by_code(form_id, cond.field_code)
+            op_id = await _get_id_by_code("compare_ops", cond.op_code)
+            rhs_field_id = None
+            if cond.rhs_field_code:
+                rhs_field_id = await _get_field_id_by_code(form_id, cond.rhs_field_code)
+
+            await database.execute(
+                """
+                    INSERT INTO conditions (
+                        group_id, field_id, op_id, value_text, value_num, value_bool, value_date,
+                        option_code, rhs_field_id, position
+                    )
+                    VALUES (
+                        :gid, :fid, :opid, :v_txt, :v_num, :v_bool, :v_date,
+                        :v_opt, :rhs_id, :position
+                    )
+                """,
+                {
+                    "gid": row.condition_group_id,
+                    "fid": field_id,
+                    "opid": op_id,
+                    "v_txt": cond.value_text,
+                    "v_num": cond.value_num,
+                    "v_bool": cond.value_bool,
+                    "v_date": cond.value_date,
+                    "v_opt": cond.option_code,
+                    "rhs_id": rhs_field_id,
+                    "position": cond.position,
+                }
+            )
+
+        await database.execute(
+            "DELETE FROM visibility_targets WHERE visibility_rule_id = :rule_id",
+            {"rule_id": rule_id}
+        )
+
+        for target in rule.targets:
+            target_field_id = await _get_field_id_in_step(step_id, target.field_code)
+            await database.execute(
+                """
+                    INSERT INTO visibility_targets (visibility_rule_id, field_id, sort_order)
+                    VALUES (:rule_id, :field_id, :sort_order)
+                """,
+                {
+                    "rule_id": rule_id,
+                    "field_id": target_field_id,
+                    "sort_order": target.sort_order,
+                }
+            )
+
+    return await _fetch_visibility_rule(rule_id)
+
+
+@app.delete(
+    "/admin/forms/{form_id}/steps/{step_id}/visibility/{rule_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    tags=["Admin - Fields"]
+)
+async def delete_visibility_rule(form_id: int, step_id: int, rule_id: int):
+    await _ensure_step_in_form(form_id, step_id)
+
+    row = await database.fetch_one(
+        """
+            SELECT r.condition_group_id
+            FROM field_visibility_rules r
+            JOIN form_steps s ON r.step_id = s.id
+            WHERE r.id = :rule_id AND r.step_id = :step_id AND s.form_id = :form_id
+        """,
+        {"rule_id": rule_id, "step_id": step_id, "form_id": form_id}
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail=f"Правило видимости {rule_id} не найдено для шага {step_id}")
+
+    async with database.transaction():
+        await database.execute(
+            "DELETE FROM field_visibility_rules WHERE id = :rule_id",
+            {"rule_id": rule_id}
+        )
+        await database.execute(
+            "DELETE FROM condition_groups WHERE id = :group_id",
+            {"group_id": row.condition_group_id}
+        )
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 # --- CRUD для маршрутов между шагами (Step Routes) ---
