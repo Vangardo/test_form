@@ -65,6 +65,22 @@
   .toolbar{display:flex;gap:8px;flex-wrap:wrap}
   .flow{display:grid;gap:12px}
   .flow.cols-2{grid-template-columns:repeat(auto-fit,minmax(180px,1fr))}
+  .flow-canvas{display:flex;flex-wrap:wrap;gap:12px;padding:12px;border-radius:12px;background:rgba(15,23,42,.6);border:1px dashed #273247;min-height:120px;position:relative}
+  .flow-node{flex:1 1 220px;min-width:200px;max-width:260px;border-radius:12px;border:1px solid #2f3a55;background:linear-gradient(180deg,#111a32,#0b1223);padding:12px;cursor:grab;display:flex;flex-direction:column;gap:8px;position:relative}
+  .flow-node.dragging{opacity:.6}
+  .flow-node.drag-over{outline:2px dashed #6366f1;outline-offset:4px}
+  .flow-node.active{border-color:#6366f1;box-shadow:0 0 0 1px rgba(99,102,241,.35)}
+  .flow-node-header{display:flex;flex-direction:column;gap:2px}
+  .flow-node-header strong{font-size:14px}
+  .flow-node-meta{font-size:12px;color:var(--muted)}
+  .flow-links{display:flex;flex-direction:column;gap:4px;font-size:12px}
+  .flow-link{display:flex;align-items:center;gap:6px;color:#a5b4fc}
+  .flow-link::before{content:'↠';color:#6366f1}
+  .flow-node-actions{display:flex;gap:6px;flex-wrap:wrap}
+  .btn.sm{padding:6px 10px;font-size:12px;border-radius:8px}
+  .flow-empty{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:13px}
+  .target-pill{display:inline-flex;align-items:center;gap:4px;padding:4px 8px;border-radius:999px;border:1px solid #374151;background:#10172d;font-size:12px}
+  .target-pill button{border:none;background:none;color:#f87171;cursor:pointer;font-size:12px}
   .hint-block{font-size:13px;line-height:1.5;color:#c7d2fe;background:rgba(76,29,149,.15);border:1px solid rgba(76,29,149,.35);border-radius:12px;padding:12px}
   .list-header{display:flex;align-items:center;justify-content:space-between;font-size:13px;color:var(--muted)}
   .pill-group{display:flex;flex-wrap:wrap;gap:6px}
@@ -149,6 +165,18 @@
       <main class="stack">
         <div class="panel">
           <div class="panel-header">
+            <h2>Визуальный сценарий</h2>
+            <span class="muted mono">Drag & Drop шагов и связей</span>
+          </div>
+          <div class="panel-body">
+            <div class="hint-block">Перетаскивайте шаги, чтобы менять порядок, и быстро переходите к настройке переходов и правил видимости. Стрелки показывают, куда ведут сценарии.</div>
+            <div id="flowCanvas" class="flow-canvas">
+              <div class="flow-empty">Нет шагов в форме</div>
+            </div>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-header">
             <h2>Конструктор шага</h2>
             <span class="muted mono">Поля и условия видимости</span>
           </div>
@@ -194,6 +222,33 @@
               </div>
               <div class="hint">Настройте сценарии отображения уточняющих вопросов, зависящих от ответов пользователя.</div>
               <div id="visibilityList" class="list"></div>
+            </div>
+            <div class="segment">
+              <div class="list-header">
+                <span>Новое правило</span>
+              </div>
+              <div class="row">
+                <label style="flex:1 1 180px">Действие<select id="vis_action"></select></label>
+                <label style="flex:1 1 140px">Приоритет<input type="number" id="vis_priority" value="100"></label>
+                <label style="flex:1 1 140px">Логика<select id="vis_logic"><option>AND</option><option>OR</option></select></label>
+              </div>
+              <label>Описание<textarea id="vis_description" placeholder="Сценарий / подсказка"></textarea></label>
+              <div class="segment-title">Целевые поля</div>
+              <div class="row">
+                <label style="flex:1 1 220px">Поле<select id="vis_target_select"></select></label>
+                <button class="btn ghost sm" id="btnAddVisTarget" type="button">Добавить</button>
+              </div>
+              <div id="visTargets" class="pill-group"></div>
+              <div class="divider"></div>
+              <div class="list-header">
+                <span>Условия</span>
+              </div>
+              <div id="visCondList" class="list"></div>
+              <div class="toolbar">
+                <button class="btn ghost sm" id="btnAddVisCond" type="button">+ условие</button>
+                <span class="right"></span>
+                <button class="btn primary" id="btnCreateVisibilityRule" type="button">Создать правило</button>
+              </div>
             </div>
           </div>
         </div>
@@ -347,7 +402,7 @@ $$('.tab').forEach(tab=>{
 
 /* Caches */
 let cache = {
-  forms: [], steps: [], dicts: [], stepTypes: [], dtypes: [], itypes: [], ops:[]
+  forms: [], steps: [], dicts: [], stepTypes: [], dtypes: [], itypes: [], ops: [], visActions: []
 };
 
 let CURRENT_FORM_ID = null;
@@ -356,8 +411,10 @@ let CURRENT_FIELD_ID = null;
 let CURRENT_FORM_CODE = null;
 let CURRENT_INSTANCE = null;
 let FORM_FIELDS_CACHE = [];
+let STEP_FIELDS_CACHE = {};
 let CURRENT_INSPECTED_INSTANCE = null;
 let FORM_STEP_INDEX = {};
+let FLOW_ROUTES_CACHE = {};
 
 /* Helpers */
 async function getJSON(url, opt={}){ const r=await fetch(url,opt); if(!r.ok){throw new Error(await r.text());} return r.json(); }
@@ -394,7 +451,26 @@ async function loadTableRows(name){
   if(name==='step_types')      return [{code:'questionnaire',id:1,title:'Questionnaire'},{code:'upload',id:2,title:'File upload'},{code:'review',id:3,title:'Review'}];
   if(name==='field_data_types')return [{code:'string',id:1,title:'String'},{code:'text',id:2,title:'Text'},{code:'integer',id:3,title:'Integer'},{code:'decimal',id:4,title:'Decimal'},{code:'boolean',id:5,title:'Boolean'},{code:'date',id:6,title:'Date'},{code:'datetime',id:7,title:'Datetime'}];
   if(name==='field_input_types')return [{code:'input',id:1,title:'Input'},{code:'textarea',id:2,title:'Textarea'},{code:'select',id:3,title:'Select'},{code:'multiselect',id:4,title:'Multiselect'},{code:'checkbox',id:5,title:'Checkbox'},{code:'datepicker',id:6,title:'Date picker'}];
-  if(name==='compare_ops')     return [{code:'eq',id:1,title:'Equals'},{code:'ne',id:2,title:'Not equals'},{code:'is_true',id:3,title:'Is true'},{code:'is_false',id:4,title:'Is false'},{code:'is_empty',id:5,title:'Is empty'},{code:'not_empty',id:6,title:'Not empty'}];
+  if(name==='compare_ops')     return [
+    {code:'eq',id:1,title:'Equals'},
+    {code:'ne',id:2,title:'Not equals'},
+    {code:'gt',id:3,title:'Greater than'},
+    {code:'gte',id:4,title:'Greater or equal'},
+    {code:'lt',id:5,title:'Less than'},
+    {code:'lte',id:6,title:'Less or equal'},
+    {code:'in',id:7,title:'In list'},
+    {code:'not_in',id:8,title:'Not in list'},
+    {code:'like',id:9,title:'Like'},
+    {code:'ilike',id:10,title:'Case-insensitive like'},
+    {code:'is_true',id:11,title:'Is true'},
+    {code:'is_false',id:12,title:'Is false'},
+    {code:'is_empty',id:13,title:'Is empty'},
+    {code:'not_empty',id:14,title:'Not empty'}
+  ];
+  if(name==='visibility_actions') return [
+    {code:'show',id:1,title:'Show'},
+    {code:'hide',id:2,title:'Hide'}
+  ];
   return [];
 }
 
@@ -428,6 +504,8 @@ function showFormInfo(f){
 async function refreshSteps(){
   const formId = +$('#formsSelect').value;
   if(!formId) return;
+  STEP_FIELDS_CACHE = {};
+  FLOW_ROUTES_CACHE = {};
   const rows = await getJSON(`${API}/admin/forms/${formId}/steps`);
   cache.steps = rows;
   const listEl = $('#stepsList');
@@ -462,10 +540,12 @@ async function refreshSteps(){
   CURRENT_STEP_ID = nextSelected;
   const selectedStep = cache.steps.find(s=>s.id===CURRENT_STEP_ID);
   fillStepForm(selectedStep);
-  await refreshFields();
+  await refreshFields(nextSelected);
+  await refreshTransitionFields(nextSelected);
+  await refreshFlowRoutes();
   await refreshRoutesList();
   await refreshVisibilityList();
-  await refreshTransitionFields();
+  resetVisibilityBuilder();
 }
 
 async function refreshDicts(){
@@ -476,17 +556,25 @@ async function refreshDicts(){
 }
 
 async function refreshRefs(){
-  const [stepTypes, dtypes, itypes, ops] = await Promise.all([
-    loadTableRows('step_types'), loadTableRows('field_data_types'),
-    loadTableRows('field_input_types'), loadTableRows('compare_ops')
+  const [stepTypes, dtypes, itypes, ops, visActions] = await Promise.all([
+    loadTableRows('step_types'),
+    loadTableRows('field_data_types'),
+    loadTableRows('field_input_types'),
+    loadTableRows('compare_ops'),
+    loadTableRows('visibility_actions')
   ]);
-  cache.stepTypes=stepTypes; cache.dtypes=dtypes; cache.itypes=itypes; cache.ops=ops;
+  cache.stepTypes=stepTypes; cache.dtypes=dtypes; cache.itypes=itypes; cache.ops=ops; cache.visActions = visActions;
   const sTypeSel = $('#s_type'); sTypeSel.innerHTML='';
   stepTypes.forEach(x => sTypeSel.append(opt(x.code, x.title)));
   const dtSel = $('#fld_dtype'); dtSel.innerHTML='';
   dtypes.forEach(x => dtSel.append(opt(x.code, x.title)));
   const itSel = $('#fld_input'); itSel.innerHTML='';
   itypes.forEach(x => itSel.append(opt(x.code, x.title)));
+  const visSelect = $('#vis_action');
+  if(visSelect){
+    visSelect.innerHTML='';
+    visActions.forEach(x=> visSelect.append(opt(x.code, x.title)));
+  }
 }
 
 async function refreshFields(stepId = null){
@@ -500,6 +588,8 @@ async function refreshFields(stepId = null){
     ...r,
     step_title: step ? step.title : ''
   }));
+  STEP_FIELDS_CACHE[targetStepId] = FORM_FIELDS_CACHE;
+  populateVisibilityTargetSelect();
   const list = $('#fieldsList'); list.innerHTML='';
   let nextField = CURRENT_FIELD_ID && FORM_FIELDS_CACHE.some(f=>f.id===CURRENT_FIELD_ID)
     ? CURRENT_FIELD_ID
@@ -562,6 +652,7 @@ async function selectStep(stepId){
   await refreshFields(stepId);
   await refreshRoutesList();
   await refreshVisibilityList();
+  resetVisibilityBuilder();
 }
 
 function resetFieldForm(){
@@ -801,38 +892,319 @@ $('#fld_step').onchange = ()=>{
 };
 
 /* Transition builder */
-function addCondRow(){
-  const wrap=document.createElement('div'); wrap.className='row item';
-  const fields = cacheFormFields(); // all fields in form
-  wrap.innerHTML = `
-    <label style="flex:2 1 220px">Поле
-      <select class="c_field">${fields.map(f=>`<option value="${f.code}" data-dtype="${f.data_type_code}" data-input="${f.input_type_code}">${f.step_title} • ${f.title}</option>`).join('')}</select>
-    </label>
-    <label style="flex:1 1 140px">Оператор
-      <select class="c_op">${cache.ops.map(o=>`<option value="${o.code}">${o.title}</option>`).join('')}</select>
-    </label>
-    <label style="flex:2 1 220px">Значение
-      <input class="c_val" type="text" placeholder="значение / option_code"/>
-    </label>
-    <button class="btn error" onclick="this.parentElement.remove()">×</button>
-  `;
-  $('#condList').append(wrap);
+function getTransitionFields(stepId = null){
+  const sourceId = stepId || +$('#tr_src').value;
+  if(!sourceId) return [];
+  return STEP_FIELDS_CACHE[sourceId] || [];
 }
-function cacheFormFields(){
-  return window.__formFields || [];
-}
-async function refreshTransitionFields(){
-  const formId = CURRENT_FORM_ID || +$('#formsSelect').value;
-  if(!formId){ window.__formFields = []; return; }
-  const steps = cache.steps.length ? cache.steps : await getJSON(`${API}/admin/forms/${formId}/steps`).catch(()=>[]);
-  const fieldPromises = steps.map(async s => {
-    const fs = await getJSON(`${API}/admin/steps/${s.id}/fields`).catch(()=>[]);
-    return fs.map(f => ({...f, step_title: s.title}));
+
+async function refreshTransitionFields(stepId = null){
+  const sourceId = stepId || +$('#tr_src').value;
+  if(!sourceId){ return []; }
+  if(!STEP_FIELDS_CACHE[sourceId]){
+    const rows = await getJSON(`${API}/admin/steps/${sourceId}/fields`).catch(()=>[]);
+    const step = cache.steps.find(s=>s.id===sourceId);
+    STEP_FIELDS_CACHE[sourceId] = rows.map(r=>({
+      ...r,
+      step_title: step ? step.title : ''
+    }));
+  }
+  const fields = STEP_FIELDS_CACHE[sourceId];
+  const options = fields.map(f=>`<option value="${f.code}">${f.title} (${f.code})</option>`).join('');
+  $$('#condList .c_field').forEach(sel=>{
+    const current = sel.value;
+    sel.innerHTML = options;
+    if(fields.some(f=>f.code===current)){
+      sel.value = current;
+    } else if(fields[0]){
+      sel.value = fields[0].code;
+    }
   });
-  const results = await Promise.all(fieldPromises);
-  window.__formFields = results.flat();
+  return fields;
 }
-function getFormFields(){ return window.__formFields || []; }
+
+function resolveConditionValue(field, op, raw){
+  const cond = {value_text:null, value_num:null, value_bool:null, value_date:null, option_code:null};
+  const trimmed = raw.trim();
+  if(['is_true','is_false','is_empty','not_empty'].includes(op) || !trimmed){
+    if(op==='is_true') cond.value_bool = true;
+    if(op==='is_false') cond.value_bool = false;
+    return cond;
+  }
+  if(field && (field.input_type_code==='select' || field.input_type_code==='multiselect')){
+    cond.option_code = trimmed;
+    return cond;
+  }
+  if(field && (field.data_type_code==='integer' || field.data_type_code==='decimal')){
+    const num = Number(trimmed);
+    if(!Number.isNaN(num)){
+      cond.value_num = num;
+      return cond;
+    }
+  }
+  if(field && field.data_type_code==='boolean'){
+    const lower = trimmed.toLowerCase();
+    if(['true','1','yes','да','on'].includes(lower)) cond.value_bool = true;
+    else if(['false','0','no','нет','off'].includes(lower)) cond.value_bool = false;
+    else cond.value_bool = lower === 'true';
+    return cond;
+  }
+  if(field && field.data_type_code==='date'){
+    cond.value_date = trimmed;
+    return cond;
+  }
+  cond.value_text = trimmed;
+  return cond;
+}
+
+function getVisibilityTargetCodes(){
+  return $$('#visTargets .target-pill').map(el=>el.dataset.code);
+}
+
+function ensureVisibilityTargetsPlaceholder(){
+  const wrap = $('#visTargets');
+  if(!wrap) return;
+  if(!wrap.querySelector('.target-pill')){
+    wrap.innerHTML = '<span class="muted">Пока не выбрано</span>';
+  }
+}
+
+function populateVisibilityTargetSelect(){
+  const select = $('#vis_target_select');
+  if(!select) return;
+  const fields = FORM_FIELDS_CACHE || [];
+  const existing = getVisibilityTargetCodes();
+  select.innerHTML='';
+  if(!fields.length){
+    select.append(opt('', 'Нет полей на шаге'));
+    select.disabled = true;
+    ensureVisibilityTargetsPlaceholder();
+    return;
+  }
+  select.disabled = false;
+  select.append(opt('', '— выберите —'));
+  fields.forEach(f=>{
+    if(existing.includes(f.code)) return;
+    select.append(opt(f.code, `${f.title} (${f.code})`));
+  });
+  ensureVisibilityTargetsPlaceholder();
+}
+
+function addVisibilityTarget(code){
+  const wrap = $('#visTargets');
+  if(!wrap || !code) return;
+  const field = FORM_FIELDS_CACHE.find(f=>f.code===code);
+  if(!field){ toast('Поле не найдено на текущем шаге','warn'); return; }
+  if(wrap.querySelector(`.target-pill[data-code="${code}"]`)) return;
+  if(wrap.querySelector('.muted')) wrap.innerHTML='';
+  const pill = document.createElement('span');
+  pill.className='target-pill';
+  pill.dataset.code = field.code;
+  const btn = document.createElement('button');
+  btn.type='button';
+  btn.textContent='×';
+  btn.onclick = ()=>{
+    pill.remove();
+    populateVisibilityTargetSelect();
+    ensureVisibilityTargetsPlaceholder();
+  };
+  pill.textContent = `${field.title} (${field.code})`;
+  pill.appendChild(btn);
+  wrap.appendChild(pill);
+  populateVisibilityTargetSelect();
+}
+
+function resetVisibilityBuilder(){
+  $('#vis_priority').value = 100;
+  $('#vis_logic').value = 'AND';
+  $('#vis_description').value = '';
+  const targets = $('#visTargets');
+  if(targets){ targets.innerHTML=''; }
+  const condList = $('#visCondList');
+  if(condList){ condList.innerHTML=''; }
+  populateVisibilityTargetSelect();
+  ensureVisibilityTargetsPlaceholder();
+}
+
+function addVisibilityConditionRow(){
+  const fields = FORM_FIELDS_CACHE || [];
+  if(!fields.length){ toast('На шаге пока нет полей для условий','warn'); return; }
+  const wrap = document.createElement('div'); wrap.className='row item';
+  const fieldOptions = fields.map(f=>`<option value="${f.code}">${f.title} (${f.code})</option>`).join('');
+  const opOptions = cache.ops.map(o=>`<option value="${o.code}">${o.title}</option>`).join('');
+  wrap.innerHTML = `
+    <label style="flex:2 1 240px">Поле
+      <select class="v_field">${fieldOptions}</select>
+    </label>
+    <label style="flex:1 1 160px">Оператор
+      <select class="v_op">${opOptions}</select>
+    </label>
+    <label style="flex:2 1 240px">Значение
+      <input class="v_val" type="text" placeholder="value / option_code / true|false"/>
+    </label>
+    <button class="btn error" type="button">×</button>`;
+  wrap.querySelector('button').onclick = ()=>{ wrap.remove(); };
+  $('#visCondList').append(wrap);
+}
+
+async function refreshFlowRoutes(){
+  const formId = CURRENT_FORM_ID || +$('#formsSelect').value;
+  if(!formId){ FLOW_ROUTES_CACHE = {}; renderFlowDesigner(); return; }
+  const steps = cache.steps || [];
+  if(!steps.length){ FLOW_ROUTES_CACHE = {}; renderFlowDesigner(); return; }
+  const entries = await Promise.all(steps.map(async step => {
+    const routes = await getJSON(`${API}/admin/forms/${formId}/steps/${step.id}/routes`).catch(()=>[]);
+    return [step.id, routes];
+  }));
+  FLOW_ROUTES_CACHE = Object.fromEntries(entries);
+  renderFlowDesigner();
+}
+
+async function persistFlowOrder(orderedSteps){
+  const formId = CURRENT_FORM_ID || +$('#formsSelect').value;
+  if(!formId) return;
+  let changed = false;
+  for(let i=0;i<orderedSteps.length;i++){
+    const step = orderedSteps[i];
+    const desired = (i + 1) * 100;
+    if(step.sort_order !== desired){
+      changed = true;
+      try{
+        await getJSON(`${API}/admin/forms/${formId}/steps/${step.id}`, {
+          method:'PUT',
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({sort_order: desired})
+        });
+      }catch(e){
+        toast(`Не удалось сохранить порядок: ${e.message}`,'err');
+        return;
+      }
+    }
+  }
+  if(changed){
+    toast('Порядок шагов обновлён','ok');
+    await refreshSteps();
+  } else {
+    renderFlowDesigner();
+  }
+}
+
+async function handleFlowDrop(event, targetStepId){
+  event.preventDefault();
+  const sourceId = Number(event.dataTransfer.getData('text/plain'));
+  if(!sourceId || sourceId === targetStepId) return;
+  const ordered = (cache.steps || []).slice().sort((a,b)=> (a.sort_order - b.sort_order) || (a.id - b.id));
+  const sourceIndex = ordered.findIndex(s=>s.id===sourceId);
+  const targetIndex = ordered.findIndex(s=>s.id===targetStepId);
+  if(sourceIndex === -1 || targetIndex === -1) return;
+  const [moved] = ordered.splice(sourceIndex,1);
+  const insertIndex = ordered.findIndex(s=>s.id===targetStepId);
+  ordered.splice(insertIndex,0,moved);
+  $$('.flow-node').forEach(el=>el.classList.remove('drag-over'));
+  await persistFlowOrder(ordered);
+}
+
+function renderFlowDesigner(){
+  const canvas = $('#flowCanvas');
+  if(!canvas) return;
+  canvas.innerHTML='';
+  const steps = (cache.steps || []).slice().sort((a,b)=> (a.sort_order - b.sort_order) || (a.id - b.id));
+  if(!steps.length){
+    canvas.innerHTML = '<div class="flow-empty">Нет шагов в форме</div>';
+    return;
+  }
+  steps.forEach(step=>{
+    const node = document.createElement('div');
+    node.className = 'flow-node';
+    if(step.id === CURRENT_STEP_ID) node.classList.add('active');
+    node.draggable = true;
+    node.dataset.stepId = step.id;
+    node.addEventListener('dragstart', e=>{
+      node.classList.add('dragging');
+      e.dataTransfer.effectAllowed='move';
+      e.dataTransfer.setData('text/plain', String(step.id));
+    });
+    node.addEventListener('dragend', ()=>{
+      node.classList.remove('dragging');
+      node.classList.remove('drag-over');
+    });
+    node.addEventListener('dragover', e=>{
+      e.preventDefault();
+      node.classList.add('drag-over');
+      e.dataTransfer.dropEffect='move';
+    });
+    node.addEventListener('dragleave', ()=> node.classList.remove('drag-over'));
+    node.addEventListener('drop', e=> handleFlowDrop(e, step.id));
+    node.onclick = ()=> selectStep(step.id);
+
+    const header = document.createElement('div');
+    header.className = 'flow-node-header';
+    const metaParts = [`${step.code}`, `order ${step.sort_order}`];
+    if(step.is_terminal) metaParts.push('финальный');
+    header.innerHTML = `<strong>${step.title}</strong><span class="flow-node-meta">${metaParts.join(' • ')}</span>`;
+    node.appendChild(header);
+
+    const routes = FLOW_ROUTES_CACHE[step.id] || [];
+    if(routes.length){
+      const links = document.createElement('div');
+      links.className = 'flow-links';
+      routes.forEach(route=>{
+        const link = document.createElement('div');
+        link.className = 'flow-link';
+        const target = cache.steps.find(s=>s.id===route.target_step_id);
+        const targetTitle = target ? target.title : `#${route.target_step_id}`;
+        const pieces = [`prio ${route.priority}`];
+        if(route.conditions && route.conditions.length){
+          pieces.push(`${route.conditions.length} усл.`);
+        }
+        link.innerHTML = `${targetTitle} <span class="muted">${pieces.join(' • ')}</span>`;
+        links.appendChild(link);
+      });
+      node.appendChild(links);
+    } else {
+      const empty = document.createElement('div');
+      empty.className = 'muted';
+      empty.textContent = 'Нет переходов';
+      node.appendChild(empty);
+    }
+
+    const actions = document.createElement('div');
+    actions.className = 'flow-node-actions';
+    const openBtn = document.createElement('button');
+    openBtn.className = 'btn ghost sm';
+    openBtn.type='button';
+    openBtn.textContent = 'Открыть';
+    openBtn.onclick = e=>{ e.stopPropagation(); selectStep(step.id); };
+    actions.appendChild(openBtn);
+
+    const routeBtn = document.createElement('button');
+    routeBtn.className = 'btn primary sm';
+    routeBtn.type='button';
+    routeBtn.textContent = '+ переход';
+    routeBtn.onclick = async e=>{
+      e.stopPropagation();
+      $('#tr_src').value = step.id;
+      await refreshTransitionFields(step.id);
+      selectStep(step.id);
+      document.getElementById('tr_src')?.scrollIntoView({behavior:'smooth', block:'center'});
+    };
+    actions.appendChild(routeBtn);
+
+    const visBtn = document.createElement('button');
+    visBtn.className = 'btn ghost sm';
+    visBtn.type='button';
+    visBtn.textContent = '+ видимость';
+    visBtn.onclick = e=>{
+      e.stopPropagation();
+      selectStep(step.id);
+      document.getElementById('vis_action')?.focus();
+    };
+    actions.appendChild(visBtn);
+
+    node.appendChild(actions);
+    canvas.appendChild(node);
+  });
+}
 
 async function refreshRoutesList(){
   const list = $('#routesList');
@@ -843,7 +1215,12 @@ async function refreshRoutesList(){
   const routes = await getJSON(`${API}/admin/forms/${formId}/steps/${stepId}/routes`).catch(e=>{
     list.innerHTML = `<div class="item muted">Ошибка: ${e.message}</div>`; return [];
   });
-  if(!routes.length){ list.innerHTML = '<div class="item muted">Переходы отсутствуют</div>'; return; }
+  FLOW_ROUTES_CACHE[stepId] = routes;
+  if(!routes.length){
+    list.innerHTML = '<div class="item muted">Переходы отсутствуют</div>';
+    renderFlowDesigner();
+    return;
+  }
   list.innerHTML='';
   routes.forEach(route=>{
     const target = cache.steps.find(s=>s.id===route.target_step_id);
@@ -857,6 +1234,7 @@ async function refreshRoutesList(){
     `;
     list.appendChild(item);
   });
+  renderFlowDesigner();
 }
 
 async function refreshVisibilityList(){
@@ -936,77 +1314,129 @@ async function loadInstanceDetails(instanceId){
 }
 
 $('#btnAddCond').onclick = async ()=>{
-  let fields = getFormFields();
+  const sourceId = +$('#tr_src').value;
+  if(!sourceId){ toast('Сначала выберите источник перехода','warn'); return; }
+  let fields = getTransitionFields(sourceId);
   if(!fields.length){
-    await refreshTransitionFields();
-    fields = getFormFields();
+    fields = await refreshTransitionFields(sourceId);
   }
-  if(!fields.length){ toast('Сначала выберите шаг и обновите список полей','warn'); return;}
+  if(!fields.length){ toast('В выбранном шаге нет полей для условий','warn'); return; }
   const wrap=document.createElement('div'); wrap.className='row item';
+  const fieldOptions = fields.map(f=>`<option value="${f.code}">${f.title} (${f.code})</option>`).join('');
+  const opOptions = cache.ops.map(o=>`<option value="${o.code}">${o.title}</option>`).join('');
   wrap.innerHTML = `
     <label style="flex:2 1 260px">Поле
-      <select class="c_field">
-        ${fields.map(f=>`<option value="${f.code}" data-dtype="${f.data_type_code}" data-input="${f.input_type_code}">${f.step_title} • ${f.title} (${f.code})</option>`).join('')}
-      </select>
+      <select class="c_field">${fieldOptions}</select>
     </label>
     <label style="flex:1 1 160px">Оператор
-      <select class="c_op">${cache.ops.map(o=>`<option value="${o.code}">${o.title}</option>`).join('')}</select>
+      <select class="c_op">${opOptions}</select>
     </label>
     <label style="flex:2 1 260px">Значение
       <input class="c_val" type="text" placeholder="value / option_code / true|false"/>
     </label>
-    <button class="btn error" onclick="this.parentElement.remove()">×</button>`;
+    <button class="btn error" type="button">×</button>`;
+  wrap.querySelector('button').onclick = ()=> wrap.remove();
   $('#condList').append(wrap);
+};
+
+$('#btnAddVisTarget').onclick = ()=>{
+  const select = $('#vis_target_select');
+  if(!select) return;
+  const code = select.value;
+  if(!code){ toast('Выберите поле для видимости','warn'); return; }
+  addVisibilityTarget(code);
+};
+
+$('#btnAddVisCond').onclick = ()=> addVisibilityConditionRow();
+
+$('#btnCreateVisibilityRule').onclick = async ()=>{
+  const formId = CURRENT_FORM_ID || +$('#formsSelect').value;
+  const stepId = CURRENT_STEP_ID || +$('#fld_step').value;
+  if(!formId || !stepId){ toast('Выберите шаг формы','warn'); return; }
+  const action = $('#vis_action').value;
+  const priority = +$('#vis_priority').value || 100;
+  const logic = $('#vis_logic').value;
+  const description = $('#vis_description').value.trim();
+  const targets = $$('#visTargets .target-pill').map((pill, idx)=>({
+    field_code: pill.dataset.code,
+    sort_order: (idx + 1) * 10
+  }));
+  if(!targets.length){ toast('Добавьте хотя бы одно целевое поле','warn'); return; }
+  const rows = $$('#visCondList .row');
+  const fields = FORM_FIELDS_CACHE || [];
+  const conditions = rows.map(row=>{
+    const fieldCode = row.querySelector('.v_field').value;
+    const op = row.querySelector('.v_op').value;
+    const raw = row.querySelector('.v_val').value || '';
+    const field = fields.find(f=>f.code===fieldCode) || {};
+    const cond = {field_code:fieldCode, op_code:op, value_text:null, value_num:null, value_bool:null, value_date:null, option_code:null};
+    Object.assign(cond, resolveConditionValue(field, op, raw));
+    return cond;
+  });
+
+  const payload = {
+    action_code: action,
+    priority,
+    logic_op: logic,
+    scenario_description: description || null,
+    targets,
+    conditions
+  };
+
+  const r = await getJSON(`${API}/admin/forms/${formId}/steps/${stepId}/visibility`, {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(payload)
+  }).catch(e=>toast(e.message,'err'));
+  if(r){
+    toast('Правило видимости создано','ok');
+    resetVisibilityBuilder();
+    await refreshVisibilityList();
+  }
+};
+
+$('#tr_src').onchange = async ()=>{
+  const stepId = +$('#tr_src').value;
+  if(stepId){
+    await refreshTransitionFields(stepId);
+    $$('#condList .row .c_val').forEach(input=>{ input.value=''; });
+  }
 };
 
 $('#btnCreateTransition').onclick = async ()=>{
   const formId = +$('#formsSelect').value;
-  const payload = {
-    source_step_id:+$('#tr_src').value,
-    target_step_id:+$('#tr_dst').value,
-    priority:+$('#tr_prio').value||100,
-    description:'UI transition',
-    logic_op:$('#tr_logic').value,
-    conditions: $$('#condList .row').map(r=>({
-      field_code:r.querySelector('.c_field').value,
-      op_code:r.querySelector('.c_op').value,
-      value_text: null,
-      value_num: null,
-      value_bool: null,
-      value_date: null,
-      option_code: null
-    })).map(c=>{
-      // try to coerce bools and numbers quickly from text input:
-      const raw = ($$('#condList .row')[0].querySelector('.c_val').value||'').trim();
-      return c; // backend supports several fields; here we keep simple: user types option_code or text/bool
-    })
-  };
-  // fill each condition's value from its row inputs appropriately
+  const sourceId = +$('#tr_src').value;
+  if(!formId || !sourceId){ toast('Выберите форму и источник перехода','warn'); return; }
+  const targetId = +$('#tr_dst').value;
+  await refreshTransitionFields(sourceId);
+  const fields = getTransitionFields(sourceId);
   const rows = $$('#condList .row');
-  payload.conditions = rows.map(r=>{
+  const conditions = rows.map(r=>{
     const op = r.querySelector('.c_op').value;
     const fieldCode = r.querySelector('.c_field').value;
-    const raw = r.querySelector('.c_val').value.trim();
-    const f = getFormFields().find(x=>x.code===fieldCode) || {};
+    const raw = r.querySelector('.c_val').value || '';
+    const field = fields.find(x=>x.code===fieldCode) || {};
     const cond = {field_code:fieldCode, op_code:op, value_text:null, value_num:null, value_bool:null, value_date:null, option_code:null};
-    if(op==='is_true'||op==='is_false'||op==='is_empty'||op==='not_empty'){
-      // nothing else needed
-    } else if((f.input_type_code==='select'||f.input_type_code==='multiselect')){
-      cond.option_code = raw; // ожидаем value_code
-    } else if(f.data_type_code==='integer' || f.data_type_code==='decimal'){
-      cond.value_num = parseFloat(raw);
-    } else if(f.data_type_code==='boolean'){
-      cond.value_bool = (raw.toLowerCase()==='true');
-    } else if(f.data_type_code==='date'){
-      cond.value_date = raw;
-    } else {
-      cond.value_text = raw;
-    }
+    Object.assign(cond, resolveConditionValue(field, op, raw));
     return cond;
   });
 
+  const payload = {
+    source_step_id: sourceId,
+    target_step_id: targetId,
+    priority: +$('#tr_prio').value || 100,
+    description: 'UI transition',
+    logic_op: $('#tr_logic').value,
+    conditions
+  };
+
   const r = await getJSON(`${API}/admin/forms/${formId}/transitions`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)}).catch(e=>toast(e.message,'err'));
-  if(r){ toast(`Создан переход #${r.id} (${r.logic_op})`,'ok'); $('#condList').innerHTML=''; await refreshRoutesList(); }
+  if(r){
+    toast(`Создан переход #${r.id} (${r.logic_op})`,'ok');
+    $('#condList').innerHTML='';
+    await refreshRoutesList();
+    await refreshFlowRoutes();
+  }
 };
 
 /* USER runtime */
@@ -1187,6 +1617,7 @@ $('#btnStart').onclick = async ()=>{
   await refreshForms();
   await refreshDicts();
   await refreshTransitionFields();
+  resetVisibilityBuilder();
   // defaults
   addDictValueRow();
 })();
