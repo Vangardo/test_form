@@ -84,19 +84,7 @@ async def _fetch_step(step_id: int) -> StepRead:
     return StepRead(**row)
 
 
-async def _fetch_route(route_id: int, form_id: int) -> StepRouteRead:
-    query_route = """
-        SELECT t.id, t.form_id, t.source_step_id, t.target_step_id, t.priority,
-               t.description, g.id AS condition_group_id, g.logic_op,
-               g.description AS scenario_description
-        FROM step_transitions t
-        JOIN condition_groups g ON t.condition_group_id = g.id
-        WHERE t.id = :route_id AND t.form_id = :form_id
-    """
-    route_row = await database.fetch_one(query_route, {"route_id": route_id, "form_id": form_id})
-    if not route_row:
-        raise HTTPException(status_code=404, detail=f"Переход {route_id} не найден в форме {form_id}")
-
+async def _fetch_conditions(group_id: int) -> List[ConditionRead]:
     query_conditions = """
         SELECT c.id, c.field_id, c.op_id, c.value_text, c.value_num, c.value_bool,
                c.value_date, c.option_code, c.position,
@@ -110,11 +98,9 @@ async def _fetch_route(route_id: int, form_id: int) -> StepRouteRead:
         WHERE c.group_id = :group_id
         ORDER BY c.position
     """
-    condition_rows = await database.fetch_all(
-        query_conditions, {"group_id": route_row.condition_group_id}
-    )
+    condition_rows = await database.fetch_all(query_conditions, {"group_id": group_id})
 
-    conditions = [
+    return [
         ConditionRead(
             id=row.id,
             field_code=row.field_code,
@@ -131,6 +117,22 @@ async def _fetch_route(route_id: int, form_id: int) -> StepRouteRead:
         )
         for row in condition_rows
     ]
+
+
+async def _fetch_route(route_id: int, form_id: int) -> StepRouteRead:
+    query_route = """
+        SELECT t.id, t.form_id, t.source_step_id, t.target_step_id, t.priority,
+               t.description, g.id AS condition_group_id, g.logic_op,
+               g.description AS scenario_description
+        FROM step_transitions t
+        JOIN condition_groups g ON t.condition_group_id = g.id
+        WHERE t.id = :route_id AND t.form_id = :form_id
+    """
+    route_row = await database.fetch_one(query_route, {"route_id": route_id, "form_id": form_id})
+    if not route_row:
+        raise HTTPException(status_code=404, detail=f"Переход {route_id} не найден в форме {form_id}")
+
+    conditions = await _fetch_conditions(route_row.condition_group_id)
 
     return StepRouteRead(
         id=route_row.id,
@@ -158,6 +160,86 @@ async def _fetch_routes_for_step(form_id: int, step_id: int) -> List[StepRouteRe
     for row in rows:
         result.append(await _fetch_route(row.id, form_id))
     return result
+
+
+async def _fetch_field(field_id: int) -> FieldRead:
+    query = """
+        SELECT
+            f.*, dt.code AS data_type_code, it.code AS input_type_code,
+            d.code AS dictionary_code
+        FROM step_fields f
+        JOIN field_data_types dt ON f.data_type_id = dt.id
+        JOIN field_input_types it ON f.input_type_id = it.id
+        LEFT JOIN dictionaries d ON f.dictionary_id = d.id
+        WHERE f.id = :field_id
+    """
+    row = await database.fetch_one(query, {"field_id": field_id})
+    if not row:
+        raise HTTPException(status_code=404, detail=f"Поле {field_id} не найдено")
+
+    options: List[FieldOptionCreate] = []
+    if row.input_type_code in ('select', 'multiselect'):
+        if row.dictionary_id:
+            options_rows = await database.fetch_all(
+                "SELECT value_code, value_label, sort_order FROM dictionary_values WHERE dictionary_id = :id ORDER BY sort_order",
+                {"id": row.dictionary_id}
+            )
+        else:
+            options_rows = await database.fetch_all(
+                "SELECT value_code, value_label, sort_order FROM field_options WHERE field_id = :id ORDER BY sort_order",
+                {"id": row.id}
+            )
+        options = [FieldOptionCreate(**opt) for opt in options_rows]
+
+    return FieldRead(**row, options=options)
+
+
+async def _fetch_visibility_rule(rule_id: int) -> VisibilityRuleRead:
+    query_rule = """
+        SELECT r.id, r.step_id, r.priority,
+               a.code AS action_code, a.title AS action_title,
+               g.id AS condition_group_id, g.logic_op,
+               g.description AS scenario_description
+        FROM field_visibility_rules r
+        JOIN visibility_actions a ON r.action_id = a.id
+        JOIN condition_groups g ON r.condition_group_id = g.id
+        WHERE r.id = :rule_id
+    """
+    row = await database.fetch_one(query_rule, {"rule_id": rule_id})
+    if not row:
+        raise HTTPException(status_code=404, detail=f"Правило видимости {rule_id} не найдено")
+
+    conditions = await _fetch_conditions(row.condition_group_id)
+
+    targets_query = """
+        SELECT t.sort_order, f.code, f.title
+        FROM visibility_targets t
+        JOIN step_fields f ON t.field_id = f.id
+        WHERE t.visibility_rule_id = :rule_id
+        ORDER BY t.sort_order, f.id
+    """
+    targets_rows = await database.fetch_all(targets_query, {"rule_id": rule_id})
+    targets = [
+        VisibilityTargetRead(
+            field_code=target.code,
+            field_title=target.title,
+            sort_order=target.sort_order
+        )
+        for target in targets_rows
+    ]
+
+    return VisibilityRuleRead(
+        id=row.id,
+        step_id=row.step_id,
+        priority=row.priority,
+        action_code=row.action_code,
+        action_title=row.action_title,
+        condition_group_id=row.condition_group_id,
+        logic_op=row.logic_op,
+        scenario_description=row.scenario_description,
+        conditions=conditions,
+        targets=targets
+    )
 
 
 # ====================================================================
@@ -274,6 +356,17 @@ class FieldRead(FieldBase):
     dictionary_code: Optional[str] = None  # Для админки, чтобы знала что привязано
 
 
+class FieldUpdate(BaseModel):
+    code: Optional[str] = None
+    title: Optional[str] = None
+    data_type_code: Optional[str] = None
+    input_type_code: Optional[str] = None
+    is_required: Optional[bool] = None
+    sort_order: Optional[int] = None
+    dictionary_code: Optional[str] = None
+    options: Optional[List[FieldOptionCreate]] = None
+
+
 # --- Условия и Переходы (Conditions & Transitions) ---
 class ConditionBase(BaseModel):
     field_code: str
@@ -297,13 +390,32 @@ class ConditionRead(ConditionBase):
     op_title: str
 
 
+class VisibilityTargetRead(BaseModel):
+    field_code: str
+    field_title: str
+    sort_order: int
+
+
+class VisibilityRuleRead(BaseModel):
+    id: int
+    step_id: int
+    priority: int
+    action_code: str
+    action_title: str
+    condition_group_id: int
+    logic_op: str
+    scenario_description: Optional[str] = None
+    conditions: List[ConditionRead] = []
+    targets: List[VisibilityTargetRead] = []
+
+
 class StepRouteBase(BaseModel):
     target_step_id: int
     priority: int = 100
     description: Optional[str] = None
     scenario_description: Optional[str] = None
     logic_op: str = "AND"
-    conditions: List[ConditionCreate] = []
+    conditions: List[ConditionCreate] = Field(default_factory=list)
 
 
 class StepRouteCreate(StepRouteBase):
@@ -318,8 +430,46 @@ class StepRouteRead(StepRouteBase):
     id: int
     form_id: int
     source_step_id: int
-    condition_group_id: int
-    conditions: List[ConditionRead]
+    conditions: List[ConditionRead] = Field(default_factory=list)
+
+
+class InstanceSummary(BaseModel):
+    id: int
+    form_id: int
+    user_id: int
+    status_code: str
+    current_step_code: Optional[str] = None
+    started_at: Any
+    updated_at: Any
+    completed_steps: List[str] = Field(default_factory=list)
+    available_steps: List[str] = Field(default_factory=list)
+
+
+class InstanceFieldAnswer(BaseModel):
+    field_code: str
+    field_title: str
+    value: Any
+
+
+class InstanceStepAnswers(BaseModel):
+    step_id: int
+    step_code: str
+    step_title: str
+    status: Optional[str] = None
+    answers: List[InstanceFieldAnswer] = Field(default_factory=list)
+
+
+class InstanceDetail(BaseModel):
+    id: int
+    form_id: int
+    form_code: str
+    user_id: int
+    status_code: str
+    started_at: Any
+    updated_at: Any
+    steps: List[InstanceStepAnswers] = Field(default_factory=list)
+    condition_group_id: Optional[int] = None
+    conditions: List[ConditionRead] = Field(default_factory=list)
 
 
 # --- Универсальные справочные строки ---
@@ -570,7 +720,7 @@ async def create_field(step_id: int, field: FieldCreate):
         created_options = [FieldOptionCreate(**row) for row in options_rows]
     # --->
 
-    return FieldRead(id=field_id, step_id=step_id, **field.dict(), options=created_options)
+    return await _fetch_field(field_id)
 
 
 @app.get("/admin/steps/{step_id}/fields", response_model=List[FieldRead], tags=["Admin - Fields"])
@@ -613,6 +763,155 @@ async def get_step_fields(step_id: int):
 
         result.append(FieldRead(**field, options=options))
 
+    return result
+
+
+@app.get("/admin/fields/{field_id}", response_model=FieldRead, tags=["Admin - Fields"])
+async def get_field(field_id: int):
+    return await _fetch_field(field_id)
+
+
+@app.put("/admin/fields/{field_id}", response_model=FieldRead, tags=["Admin - Fields"])
+async def update_field(field_id: int, field: FieldUpdate):
+    query_current = """
+        SELECT
+            f.id, f.step_id, f.code, f.title, f.data_type_id, f.input_type_id,
+            f.is_required, f.sort_order, f.dictionary_id,
+            dt.code AS data_type_code,
+            it.code AS input_type_code,
+            d.code  AS dictionary_code
+        FROM step_fields f
+        JOIN field_data_types dt ON f.data_type_id = dt.id
+        JOIN field_input_types it ON f.input_type_id = it.id
+        LEFT JOIN dictionaries d ON f.dictionary_id = d.id
+        WHERE f.id = :field_id
+    """
+    current = await database.fetch_one(query_current, {"field_id": field_id})
+    if not current:
+        raise HTTPException(status_code=404, detail=f"Поле {field_id} не найдено")
+
+    options_rows = await database.fetch_all(
+        "SELECT value_code, value_label, sort_order FROM field_options WHERE field_id = :field_id ORDER BY sort_order",
+        {"field_id": field_id}
+    )
+
+    incoming = field.dict(exclude_unset=True)
+
+    final_code = incoming.get('code', current.code)
+    final_title = incoming.get('title', current.title)
+    final_data_type_code = incoming.get('data_type_code', current.data_type_code)
+    final_input_type_code = incoming.get('input_type_code', current.input_type_code)
+    final_is_required = incoming.get('is_required', bool(current.is_required))
+    final_sort_order = incoming.get('sort_order', current.sort_order)
+
+    dictionary_code_provided = 'dictionary_code' in incoming
+    options_provided = 'options' in incoming
+
+    final_dictionary_code = incoming.get('dictionary_code', current.dictionary_code)
+    provided_options: Optional[List[FieldOptionCreate]] = incoming.get('options') if options_provided else None
+
+    # Приводим пустые значения к None
+    if isinstance(final_dictionary_code, str) and final_dictionary_code.strip() == "":
+        final_dictionary_code = None
+
+    if final_input_type_code not in ('select', 'multiselect'):
+        if dictionary_code_provided and final_dictionary_code is not None:
+            raise HTTPException(status_code=400, detail="Для данного input_type нельзя указать dictionary_code")
+        if options_provided and provided_options:
+            raise HTTPException(status_code=400, detail="Для данного input_type нельзя указывать options")
+        dictionary_id = None
+        options_to_write: Optional[List[FieldOptionCreate]] = []
+    else:
+        dictionary_id = current.dictionary_id
+        options_to_write: Optional[List[FieldOptionCreate]] = None
+
+        if final_dictionary_code and provided_options:
+            raise HTTPException(status_code=400, detail="Поле не может одновременно иметь dictionary_code и options")
+
+        if dictionary_code_provided:
+            if final_dictionary_code is None:
+                dictionary_id = None
+            else:
+                dictionary_id = await _get_id_by_code("dictionaries", final_dictionary_code)
+            options_to_write = []
+        if options_provided:
+            options_to_write = provided_options or []
+            dictionary_id = None
+
+        if options_to_write is None:
+            # Значит пользователь ничего не менял – используем текущее состояние
+            if dictionary_id:
+                options_to_write = []
+            else:
+                options_to_write = [FieldOptionCreate(**row) for row in options_rows]
+
+        if not dictionary_id and not options_to_write:
+            raise HTTPException(status_code=400, detail="Для select/multiselect необходимо указать dictionary_code или options")
+
+    data_type_id = await _get_id_by_code("field_data_types", final_data_type_code)
+    input_type_id = await _get_id_by_code("field_input_types", final_input_type_code)
+
+    update_parts = [
+        "code = :code",
+        "title = :title",
+        "data_type_id = :data_type_id",
+        "input_type_id = :input_type_id",
+        "is_required = :is_required",
+        "sort_order = :sort_order",
+        "dictionary_id = :dictionary_id"
+    ]
+
+    values = {
+        "field_id": field_id,
+        "code": final_code,
+        "title": final_title,
+        "data_type_id": data_type_id,
+        "input_type_id": input_type_id,
+        "is_required": final_is_required,
+        "sort_order": final_sort_order,
+        "dictionary_id": dictionary_id
+    }
+
+    try:
+        await database.execute(
+            "UPDATE step_fields SET " + ", ".join(update_parts) + " WHERE id = :field_id",
+            values
+        )
+    except sqlite3.IntegrityError as exc:
+        raise HTTPException(status_code=400, detail=f"Не удалось обновить поле: {exc}")
+
+    # Обновляем локальные опции
+    if final_input_type_code in ('select', 'multiselect'):
+        if options_to_write is not None:
+            await database.execute("DELETE FROM field_options WHERE field_id = :field_id", {"field_id": field_id})
+            for opt in options_to_write:
+                await database.execute(
+                    """
+                        INSERT INTO field_options (field_id, value_code, value_label, sort_order)
+                        VALUES (:field_id, :value_code, :value_label, :sort_order)
+                    """,
+                    {"field_id": field_id, **opt.dict()}
+                )
+    else:
+        await database.execute("DELETE FROM field_options WHERE field_id = :field_id", {"field_id": field_id})
+
+    return await _fetch_field(field_id)
+
+
+@app.get(
+    "/admin/forms/{form_id}/steps/{step_id}/visibility",
+    response_model=List[VisibilityRuleRead],
+    tags=["Admin - Fields"]
+)
+async def list_visibility_rules(form_id: int, step_id: int):
+    await _ensure_step_in_form(form_id, step_id)
+    rows = await database.fetch_all(
+        "SELECT id FROM field_visibility_rules WHERE step_id = :step_id ORDER BY priority, id",
+        {"step_id": step_id}
+    )
+    result: List[VisibilityRuleRead] = []
+    for row in rows:
+        result.append(await _fetch_visibility_rule(row.id))
     return result
 
 
@@ -848,6 +1147,140 @@ async def get_step_graph(form_id: int, step_id: int):
     }
 
 
+# --- Инстансы форм (просмотр ответов) ---
+@app.get(
+    "/admin/forms/{form_id}/instances",
+    response_model=List[InstanceSummary],
+    tags=["Admin - Instances"]
+)
+async def list_form_instances(form_id: int):
+    form_row = await database.fetch_one("SELECT id FROM forms WHERE id = :id", {"id": form_id})
+    if not form_row:
+        raise HTTPException(status_code=404, detail=f"Форма {form_id} не найдена")
+
+    query = """
+        SELECT i.id, i.user_id, i.status_id, i.current_step_id,
+               i.started_at, i.updated_at,
+               st.code AS status_code
+        FROM form_instances i
+        JOIN instance_statuses st ON i.status_id = st.id
+        WHERE i.form_id = :form_id
+        ORDER BY i.updated_at DESC
+    """
+    rows = await database.fetch_all(query, {"form_id": form_id})
+
+    summaries: List[InstanceSummary] = []
+    for row in rows:
+        navigation = await _get_navigation_summary(row.id, row.current_step_id)
+        summaries.append(
+            InstanceSummary(
+                id=row.id,
+                form_id=form_id,
+                user_id=row.user_id,
+                status_code=row.status_code,
+                current_step_code=navigation.get("current_step_code"),
+                started_at=row.started_at,
+                updated_at=row.updated_at,
+                completed_steps=navigation.get("completed_steps", []),
+                available_steps=navigation.get("available_steps", [])
+            )
+        )
+
+    return summaries
+
+
+@app.get(
+    "/admin/instances/{instance_id}",
+    response_model=InstanceDetail,
+    tags=["Admin - Instances"]
+)
+async def get_instance_details(instance_id: int):
+    query_instance = """
+        SELECT i.id, i.form_id, i.user_id, i.started_at, i.updated_at,
+               st.code AS status_code,
+               f.code AS form_code
+        FROM form_instances i
+        JOIN instance_statuses st ON i.status_id = st.id
+        JOIN forms f ON i.form_id = f.id
+        WHERE i.id = :id
+    """
+    instance = await database.fetch_one(query_instance, {"id": instance_id})
+    if not instance:
+        raise HTTPException(status_code=404, detail="Инстанс формы не найден")
+
+    steps_rows = await database.fetch_all(
+        """
+            SELECT id, code, title
+            FROM form_steps
+            WHERE form_id = :form_id
+            ORDER BY sort_order, id
+        """,
+        {"form_id": instance.form_id}
+    )
+
+    status_rows = await database.fetch_all(
+        "SELECT step_id, status_code FROM instance_steps WHERE instance_id = :id ORDER BY entered_at",
+        {"id": instance_id}
+    )
+    status_map: Dict[int, str] = {}
+    for row in status_rows:
+        status_map[row.step_id] = row.status_code
+
+    answers_rows = await database.fetch_all(
+        """
+            SELECT a.field_id, f.step_id, f.code AS field_code, f.title AS field_title,
+                   a.value_text, a.value_num, a.value_bool, a.value_date
+            FROM instance_answers a
+            JOIN step_fields f ON a.field_id = f.id
+            WHERE a.instance_id = :id
+        """,
+        {"id": instance_id}
+    )
+
+    multi_rows = await database.fetch_all(
+        "SELECT field_id, option_code FROM instance_answers_multi WHERE instance_id = :id",
+        {"id": instance_id}
+    )
+    multi_map: Dict[int, List[str]] = {}
+    for row in multi_rows:
+        multi_map.setdefault(row.field_id, []).append(row.option_code)
+
+    answers_map: Dict[int, List[InstanceFieldAnswer]] = {}
+    for row in answers_rows:
+        value: Any = None
+        for candidate in (row.value_bool, row.value_text, row.value_num, row.value_date):
+            if candidate is not None:
+                value = candidate
+                break
+        if row.field_id in multi_map:
+            value = multi_map[row.field_id]
+        answers_map.setdefault(row.step_id, []).append(
+            InstanceFieldAnswer(field_code=row.field_code, field_title=row.field_title, value=value)
+        )
+
+    steps: List[InstanceStepAnswers] = []
+    for step in steps_rows:
+        steps.append(
+            InstanceStepAnswers(
+                step_id=step.id,
+                step_code=step.code,
+                step_title=step.title,
+                status=status_map.get(step.id),
+                answers=answers_map.get(step.id, [])
+            )
+        )
+
+    return InstanceDetail(
+        id=instance.id,
+        form_id=instance.form_id,
+        form_code=instance.form_code,
+        user_id=instance.user_id,
+        status_code=instance.status_code,
+        started_at=instance.started_at,
+        updated_at=instance.updated_at,
+        steps=steps
+    )
+
 # TODO:
 # - PUT/DELETE эндпоинты для админки
 # - CRUD для Visibility Rules (по аналогии с Transitions)
@@ -878,6 +1311,8 @@ class UserStepField(BaseModel):
 
 class StepResponse(BaseModel):
     instance_id: int
+    form_id: int
+    form_code: str
     step_id: int
     step_code: str
     step_title: str
@@ -1064,6 +1499,10 @@ async def _get_step_details(instance_id: int, step_id: int, *, current_step_id: 
     Собирает всю информацию о шаге.
     Корректно отдает 'options' из 'dictionaries' ИЛИ 'field_options'.
     """
+    state = form_sessions.get(instance_id)
+    if not state:
+        state = await _sync_session_state(instance_id)
+
     step_row = await database.fetch_one(
         "SELECT id, code, title, is_terminal FROM form_steps WHERE id = :step_id",
         {"step_id": step_id}
@@ -1119,11 +1558,13 @@ async def _get_step_details(instance_id: int, step_id: int, *, current_step_id: 
             input_type=field.input_type, is_required=field.is_required, options=options
         ))
 
-    active_step_id = current_step_id if current_step_id is not None else step_id
+    active_step_id = current_step_id if current_step_id is not None else state.get("current_step_id")
     navigation = await _get_navigation_summary(instance_id, active_step_id)
 
     return StepResponse(
         instance_id=instance_id,
+        form_id=state.get("form_id"),
+        form_code=state.get("form_code"),
         step_id=step_id,
         step_code=step_row.code,
         step_title=step_row.title,
@@ -1162,7 +1603,12 @@ async def _save_answers(instance_id: int, step_id: int, answers: List[Answer]):
             if data_type == 'boolean':
                 value_bool = bool(raw_value) if raw_value is not None else None
             elif data_type in ('integer', 'decimal'):
-                value_num = float(raw_value) if raw_value is not None else None
+                if raw_value is not None:
+                    try:
+                        value_num = float(raw_value)
+                    except (TypeError, ValueError):
+                        value_text = str(raw_value)
+                # оставляем value_num = None, если конвертация не удалась
             elif data_type in ('date', 'datetime'):
                 value_date = raw_value
             else:
@@ -1399,6 +1845,29 @@ async def update_session_step(form_code: str, session_id: int, step_code: str, d
     await _validate_navigation(session_id, state.get("current_step_id"), step_id)
 
     await _save_answers(session_id, step_id, data.answers)
+
+    updated_state = await _sync_session_state(session_id)
+    return await _get_step_details(session_id, step_id, current_step_id=updated_state.get("current_step_id"))
+
+
+@app.post(
+    "/runtime/forms/{form_code}/sessions/{session_id}/set-current/{step_code}",
+    response_model=StepResponse,
+    tags=["User - Runtime"]
+)
+async def set_current_session_step(form_code: str, session_id: int, step_code: str):
+    form_id, state = await _get_session_for_form(form_code, session_id)
+    step_id = await _get_step_id_by_code(form_id, step_code)
+    await _validate_navigation(session_id, state.get("current_step_id"), step_id)
+
+    await database.execute(
+        "UPDATE form_instances SET current_step_id = :step_id, updated_at = CURRENT_TIMESTAMP WHERE id = :id",
+        {"step_id": step_id, "id": session_id}
+    )
+    await database.execute(
+        "INSERT INTO instance_steps (instance_id, step_id, status_code, entered_at) VALUES (:id, :step_id, 'entered', CURRENT_TIMESTAMP)",
+        {"id": session_id, "step_id": step_id}
+    )
 
     updated_state = await _sync_session_state(session_id)
     return await _get_step_details(session_id, step_id, current_step_id=updated_state.get("current_step_id"))
