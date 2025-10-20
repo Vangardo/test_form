@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import uvicorn
 from fastapi import FastAPI, HTTPException, Depends, Body, status
 from pydantic import BaseModel, Field, model_validator
@@ -320,6 +322,13 @@ class StepRouteRead(StepRouteBase):
     conditions: List[ConditionRead]
 
 
+# --- Универсальные справочные строки ---
+class ReferenceRow(BaseModel):
+    id: int
+    code: str
+    title: str
+
+
 # ====================================================================
 # 4. API ЭНДПОИНТЫ "АДМИНКИ" (CRUD)
 # ====================================================================
@@ -467,6 +476,39 @@ async def get_dictionaries_list():
             DictionaryRead(id=d.id, code=d.code, title=d.title, values=[DictionaryValueCreate(**v) for v in values]))
 
     return result
+
+
+# ====================================================================
+# 5. API ДЛЯ СИСТЕМНЫХ СПРАВОЧНИКОВ (STEP TYPES, DATA TYPES ...)
+# ====================================================================
+
+REFERENCE_TABLES: Dict[str, str] = {
+    "step_types": "step_types",
+    "field_data_types": "field_data_types",
+    "field_input_types": "field_input_types",
+    "compare_ops": "compare_ops",
+    "visibility_actions": "visibility_actions",
+    "instance_statuses": "instance_statuses",
+}
+
+
+async def _fetch_reference_rows(dict_code: str) -> List[ReferenceRow]:
+    table_name = REFERENCE_TABLES.get(dict_code)
+    if not table_name:
+        raise HTTPException(status_code=404, detail=f"Неизвестный справочник '{dict_code}'")
+    query = f"SELECT id, code, title FROM {table_name} ORDER BY id"
+    rows = await database.fetch_all(query)
+    return [ReferenceRow(**row) for row in rows]
+
+
+@app.get("/dict/{dict_code}", response_model=List[ReferenceRow], tags=["Reference"])
+async def get_reference_dict(dict_code: str):
+    return await _fetch_reference_rows(dict_code)
+
+
+@app.get("/raw/{dict_code}", response_model=List[ReferenceRow], tags=["Reference"])
+async def get_reference_raw(dict_code: str):
+    return await _fetch_reference_rows(dict_code)
 
 
 # --- CRUD для Полей (Fields) ---
@@ -811,7 +853,7 @@ async def get_step_graph(form_id: int, step_id: int):
 # - CRUD для Visibility Rules (по аналогии с Transitions)
 
 # ====================================================================
-# 5. PYDANTIC МОДЕЛИ ДЛЯ "РАНТАЙМА"
+# 6. PYDANTIC МОДЕЛИ ДЛЯ "РАНТАЙМА"
 # ====================================================================
 
 class StartFormRequest(BaseModel):
@@ -866,7 +908,7 @@ class SubmitStepResponse(BaseModel):
 
 
 # ====================================================================
-# 6. HELPER-ФУНКЦИИ ДЛЯ "РАНТАЙМА"
+# 7. HELPER-ФУНКЦИИ ДЛЯ "РАНТАЙМА"
 # ====================================================================
 
 form_sessions: Dict[int, Dict[str, Any]] = {}
@@ -1221,7 +1263,7 @@ async def _get_instance_status_id(code: str) -> int:
 
 
 # ====================================================================
-# 7. API ЭНДПОИНТЫ "РАНТАЙМА"
+# 8. API ЭНДПОИНТЫ "РАНТАЙМА"
 # ====================================================================
 
 @app.post("/start", response_model=StepResponse, tags=["User - Runtime"])
@@ -1376,7 +1418,7 @@ async def serve_index():
 
 
 # ====================================================================
-# 8. ЗАПУСК СЕРВЕРА
+# 9. ЗАПУСК СЕРВЕРА
 # ====================================================================
 
 if __name__ == "__main__":
