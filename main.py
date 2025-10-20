@@ -48,10 +48,19 @@ async def _get_id_by_code(table_name: str, code: str) -> int:
     return row.id
 
 
-async def _get_field_id_by_code(form_id: int, field_code: str) -> int:
-    """Находит Field ID по его коду в рамках всей формы."""
+async def _get_field_id_by_code(
+    form_id: int,
+    field_code: str,
+    allowed_step_ids: Optional[Tuple[int, ...]] = None,
+) -> int:
+    """Находит Field ID по его коду в рамках всей формы.
+
+    Если передан ``allowed_step_ids`` — дополнительно проверяем, что поле
+    принадлежит одному из разрешённых шагов (используется, например, в
+    конструкторе переходов, где условия должны ссылаться только на источник).
+    """
     query = """
-        SELECT f.id
+        SELECT f.id AS field_id, f.step_id
         FROM step_fields f
         JOIN form_steps s ON f.step_id = s.id
         WHERE s.form_id = :form_id AND f.code = :field_code
@@ -59,7 +68,15 @@ async def _get_field_id_by_code(form_id: int, field_code: str) -> int:
     row = await database.fetch_one(query, {"form_id": form_id, "field_code": field_code})
     if not row:
         raise HTTPException(status_code=404, detail=f"Поле с кодом '{field_code}' не найдено в форме {form_id}")
-    return row.id
+    if allowed_step_ids and row.step_id not in allowed_step_ids:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Поле '{field_code}' не принадлежит разрешённым шагам: "
+                f"{', '.join(map(str, allowed_step_ids))}"
+            ),
+        )
+    return row.field_id
 
 
 async def _get_field_id_in_step(step_id: int, field_code: str) -> int:
@@ -1203,11 +1220,11 @@ async def create_step_route(form_id: int, step_id: int, route: StepRouteCreate):
         )
 
         for cond in route.conditions:
-            field_id = await _get_field_id_by_code(form_id, cond.field_code)
+            field_id = await _get_field_id_by_code(form_id, cond.field_code, (step_id,))
             op_id = await _get_id_by_code("compare_ops", cond.op_code)
             rhs_field_id = None
             if cond.rhs_field_code:
-                rhs_field_id = await _get_field_id_by_code(form_id, cond.rhs_field_code)
+                rhs_field_id = await _get_field_id_by_code(form_id, cond.rhs_field_code, (step_id,))
 
             query_cond = """
                 INSERT INTO conditions (
@@ -1303,11 +1320,11 @@ async def update_step_route(form_id: int, route_id: int, route: StepRouteUpdate)
         )
 
         for cond in route.conditions:
-            field_id = await _get_field_id_by_code(form_id, cond.field_code)
+            field_id = await _get_field_id_by_code(form_id, cond.field_code, (route_row.source_step_id,))
             op_id = await _get_id_by_code("compare_ops", cond.op_code)
             rhs_field_id = None
             if cond.rhs_field_code:
-                rhs_field_id = await _get_field_id_by_code(form_id, cond.rhs_field_code)
+                rhs_field_id = await _get_field_id_by_code(form_id, cond.rhs_field_code, (route_row.source_step_id,))
 
             await database.execute(
                 """
