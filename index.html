@@ -413,6 +413,8 @@ let CURRENT_FORM_CODE = null;
 let CURRENT_INSTANCE = null;
 let FORM_FIELDS_CACHE = [];
 let STEP_FIELDS_CACHE = {};
+let FORM_CONDITION_FIELDS = [];
+let FORM_CONDITION_FIELDS_FORM_ID = null;
 let CURRENT_INSPECTED_INSTANCE = null;
 let FORM_STEP_INDEX = {};
 let FLOW_ROUTES_CACHE = {};
@@ -421,6 +423,63 @@ let FLOW_ROUTES_CACHE = {};
 async function getJSON(url, opt={}){ const r=await fetch(url,opt); if(!r.ok){throw new Error(await r.text());} return r.json(); }
 function opt(value,label){ const o=document.createElement('option'); o.value=value; o.textContent=label; return o; }
 function rowKV(k,v){ return `<div class="item"><span class="k">${k}</span> <span class="muted">→</span> ${v}</div>` }
+
+function invalidateConditionFieldCache(){
+  FORM_CONDITION_FIELDS = [];
+  FORM_CONDITION_FIELDS_FORM_ID = null;
+}
+
+async function ensureConditionFieldsLoaded(){
+  const formId = CURRENT_FORM_ID || +$('#formsSelect').value;
+  if(!formId){
+    invalidateConditionFieldCache();
+    return [];
+  }
+  if(FORM_CONDITION_FIELDS_FORM_ID === formId && FORM_CONDITION_FIELDS.length){
+    return FORM_CONDITION_FIELDS;
+  }
+  const steps = (cache.steps || []).slice().sort((a,b)=> (a.sort_order - b.sort_order) || (a.id - b.id));
+  if(!steps.length){
+    FORM_CONDITION_FIELDS = [];
+    FORM_CONDITION_FIELDS_FORM_ID = formId;
+    return FORM_CONDITION_FIELDS;
+  }
+  const aggregated = [];
+  for(const step of steps){
+    let fields = STEP_FIELDS_CACHE[step.id];
+    if(!fields){
+      const rows = await getJSON(`${API}/admin/steps/${step.id}/fields`).catch(()=>[]);
+      const meta = {
+        step_title: step.title,
+        step_code: step.code,
+        step_sort_order: step.sort_order,
+      };
+      fields = rows.map(r=>({
+        ...r,
+        ...meta,
+      }));
+      STEP_FIELDS_CACHE[step.id] = fields;
+    } else {
+      const meta = {
+        step_title: step.title,
+        step_code: step.code,
+        step_sort_order: step.sort_order,
+      };
+      fields = fields.map(f=>({
+        ...f,
+        ...meta,
+      }));
+      STEP_FIELDS_CACHE[step.id] = fields;
+    }
+    aggregated.push(...fields.map(f=>({
+      ...f,
+    })));
+  }
+  aggregated.sort((a,b)=> (a.step_sort_order - b.step_sort_order) || (a.sort_order - b.sort_order) || (a.id - b.id));
+  FORM_CONDITION_FIELDS = aggregated;
+  FORM_CONDITION_FIELDS_FORM_ID = formId;
+  return FORM_CONDITION_FIELDS;
+}
 
 /* Load dictionaries and refs */
 async function loadRefs(){
@@ -507,6 +566,7 @@ async function refreshSteps(){
   if(!formId) return;
   STEP_FIELDS_CACHE = {};
   FLOW_ROUTES_CACHE = {};
+  invalidateConditionFieldCache();
   const rows = await getJSON(`${API}/admin/forms/${formId}/steps`);
   cache.steps = rows;
   const listEl = $('#stepsList');
@@ -546,7 +606,7 @@ async function refreshSteps(){
   await refreshFlowRoutes();
   await refreshRoutesList();
   await refreshVisibilityList();
-  resetVisibilityBuilder();
+  await resetVisibilityBuilder();
 }
 
 async function refreshDicts(){
@@ -585,11 +645,23 @@ async function refreshFields(stepId = null){
   $('#fld_step').value = targetStepId;
   const rows = await getJSON(`${API}/admin/steps/${targetStepId}/fields`);
   const step = cache.steps.find(s=>s.id===targetStepId);
+  const meta = step ? {
+    step_title: step.title,
+    step_code: step.code,
+    step_sort_order: step.sort_order,
+  } : {
+    step_title: '',
+    step_code: '',
+    step_sort_order: 0,
+  };
   FORM_FIELDS_CACHE = rows.map(r=>({
     ...r,
-    step_title: step ? step.title : ''
+    ...meta,
   }));
-  STEP_FIELDS_CACHE[targetStepId] = FORM_FIELDS_CACHE;
+  STEP_FIELDS_CACHE[targetStepId] = FORM_FIELDS_CACHE.map(f=>({
+    ...f,
+  }));
+  invalidateConditionFieldCache();
   populateVisibilityTargetSelect();
   const list = $('#fieldsList'); list.innerHTML='';
   let nextField = CURRENT_FIELD_ID && FORM_FIELDS_CACHE.some(f=>f.id===CURRENT_FIELD_ID)
@@ -653,7 +725,7 @@ async function selectStep(stepId){
   await refreshFields(stepId);
   await refreshRoutesList();
   await refreshVisibilityList();
-  resetVisibilityBuilder();
+  await resetVisibilityBuilder();
 }
 
 function resetFieldForm(){
@@ -909,9 +981,33 @@ async function refreshTransitionFields(stepId = null){
   if(!STEP_FIELDS_CACHE[sourceId]){
     const rows = await getJSON(`${API}/admin/steps/${sourceId}/fields`).catch(()=>[]);
     const step = cache.steps.find(s=>s.id===sourceId);
+    const meta = step ? {
+      step_title: step.title,
+      step_code: step.code,
+      step_sort_order: step.sort_order,
+    } : {
+      step_title: '',
+      step_code: '',
+      step_sort_order: 0,
+    };
     STEP_FIELDS_CACHE[sourceId] = rows.map(r=>({
       ...r,
-      step_title: step ? step.title : ''
+      ...meta,
+    }));
+  } else {
+    const step = cache.steps.find(s=>s.id===sourceId);
+    const meta = step ? {
+      step_title: step.title,
+      step_code: step.code,
+      step_sort_order: step.sort_order,
+    } : {
+      step_title: '',
+      step_code: '',
+      step_sort_order: 0,
+    };
+    STEP_FIELDS_CACHE[sourceId] = STEP_FIELDS_CACHE[sourceId].map(f=>({
+      ...f,
+      ...meta,
     }));
   }
   const fields = STEP_FIELDS_CACHE[sourceId];
@@ -1020,7 +1116,7 @@ function addVisibilityTarget(code){
   populateVisibilityTargetSelect();
 }
 
-function resetVisibilityBuilder(){
+async function resetVisibilityBuilder(){
   $('#vis_priority').value = 100;
   $('#vis_logic').value = 'AND';
   $('#vis_description').value = '';
@@ -1030,13 +1126,17 @@ function resetVisibilityBuilder(){
   if(condList){ condList.innerHTML=''; }
   populateVisibilityTargetSelect();
   ensureVisibilityTargetsPlaceholder();
+  await ensureConditionFieldsLoaded();
 }
 
-function addVisibilityConditionRow(){
-  const fields = FORM_FIELDS_CACHE || [];
-  if(!fields.length){ toast('На шаге пока нет полей для условий','warn'); return; }
+async function addVisibilityConditionRow(){
+  const fields = await ensureConditionFieldsLoaded();
+  if(!fields.length){ toast('Не удалось загрузить поля формы','warn'); return; }
   const wrap = document.createElement('div'); wrap.className='row item';
-  const fieldOptions = fields.map(f=>`<option value="${f.code}">${f.title} (${f.code})</option>`).join('');
+  const fieldOptions = fields.map(f=>{
+    const prefix = f.step_title ? `${f.step_title} › ` : '';
+    return `<option value="${f.code}">${prefix}${f.title} (${f.code})</option>`;
+  }).join('');
   const opOptions = cache.ops.map(o=>`<option value="${o.code}">${o.title}</option>`).join('');
   wrap.innerHTML = `
     <label style="flex:2 1 240px">Поле
@@ -1369,7 +1469,7 @@ $('#btnCreateVisibilityRule').onclick = async ()=>{
   }));
   if(!targets.length){ toast('Добавьте хотя бы одно целевое поле','warn'); return; }
   const rows = $$('#visCondList .row');
-  const fields = FORM_FIELDS_CACHE || [];
+  const fields = await ensureConditionFieldsLoaded();
   const conditions = rows.map(row=>{
     const fieldCode = row.querySelector('.v_field').value;
     const op = row.querySelector('.v_op').value;
@@ -1396,7 +1496,7 @@ $('#btnCreateVisibilityRule').onclick = async ()=>{
   }).catch(e=>toast(e.message,'err'));
   if(r){
     toast('Правило видимости создано','ok');
-    resetVisibilityBuilder();
+    await resetVisibilityBuilder();
     await refreshVisibilityList();
   }
 };
@@ -1816,7 +1916,7 @@ $('#btnStart').onclick = async ()=>{
   await refreshForms();
   await refreshDicts();
   await refreshTransitionFields();
-  resetVisibilityBuilder();
+  await resetVisibilityBuilder();
   // defaults
   addDictValueRow();
 })();
