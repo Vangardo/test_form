@@ -1,0 +1,603 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Form Engine — Admin / User</title>
+<style>
+  :root{
+    --bg:#0f172a; --panel:#111827; --ink:#e5e7eb; --muted:#9ca3af;
+    --brand:#6d28d9; --brand-2:#8b5cf6; --ok:#22c55e; --warn:#f59e0b; --err:#ef4444;
+    --line:#1f2937;
+  }
+  *{box-sizing:border-box}
+  body{margin:0; background:linear-gradient(180deg,#0f172a,#0b1223); color:var(--ink); font:16px/1.45 system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, 'Helvetica Neue', Arial;}
+  h1,h2,h3{margin:.2rem 0 .6rem}
+  h1{font-size:22px} h2{font-size:18px; color:#c7d2fe}
+  .shell{max-width:1200px; margin:24px auto; padding:0 16px}
+  .tabs{display:flex; gap:10px; margin-bottom:16px}
+  .tab{padding:10px 14px; border:1px solid var(--line); background:#0b1223; border-radius:10px; cursor:pointer; color:var(--muted)}
+  .tab.active{background:linear-gradient(180deg,#1e1b4b,#0b1223); color:#eef; border-color:#2a2f47}
+  .grid{display:grid; gap:14px}
+  .cols-2{grid-template-columns:1fr 1fr}
+  .cols-3{grid-template-columns:repeat(3,1fr)}
+  .panel{background:linear-gradient(180deg,#111827,#0b1223); border:1px solid var(--line); padding:16px; border-radius:14px; box-shadow:0 0 0 1px rgba(255,255,255,.02) inset}
+  .row{display:flex; gap:12px; align-items:center; flex-wrap:wrap}
+  label{display:flex; flex-direction:column; gap:6px; font-size:12px; color:var(--muted)}
+  input[type="text"], input[type="number"], input[type="date"], textarea, select{
+    width:100%; padding:10px 12px; border-radius:10px; border:1px solid #243041; background:#0a1220; color:var(--ink); outline:none;
+  }
+  textarea{min-height:80px; resize:vertical}
+  input[type="checkbox"]{transform:scale(1.2)}
+  .btn{padding:10px 14px; border-radius:10px; border:1px solid #39425c; background:linear-gradient(180deg,#1b2540,#111a33); color:#e9e9ff; cursor:pointer}
+  .btn:hover{filter:brightness(1.08)}
+  .btn.primary{background:linear-gradient(180deg,var(--brand-2),var(--brand)); border-color:#5b21b6}
+  .btn.ghost{background:#0a1220}
+  .btn.ok{background:linear-gradient(180deg,#16a34a,#15803d); border-color:#14532d}
+  .btn.warn{background:linear-gradient(180deg,#f59e0b,#b45309); border-color:#92400e}
+  .btn.error{background:linear-gradient(180deg,#ef4444,#b91c1c); border-color:#7f1d1d}
+  .muted{color:var(--muted)}
+  .list{display:flex; flex-direction:column; gap:6px; max-height:200px; overflow:auto; padding-right:6px}
+  .item{padding:8px 10px; border:1px dashed #2a2f47; border-radius:10px}
+  .k{color:#a5b4fc}
+  .mono{font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size:12px}
+  .divider{height:1px; background:#222a3f; margin:10px 0}
+  .pill{display:inline-block; padding:2px 8px; border-radius:999px; font-size:12px; background:#1f2937; color:#d1d5db; border:1px solid #374151}
+  .right{margin-left:auto}
+  .hint{font-size:12px; color:#a1a1aa}
+  .table{width:100%; border-collapse:collapse; font-size:14px}
+  .table th,.table td{border-bottom:1px solid #1f2a3f; padding:8px 6px; text-align:left}
+  .hr{height:1px;background:#1f2a3f;margin:16px 0}
+  .code{white-space:pre-wrap; background:#0a1022; border:1px solid #1d2640; padding:10px; border-radius:10px}
+  .badge{padding:2px 6px;border-radius:8px;background:#0c1429;border:1px solid #29344f;color:#c7d2fe;font-size:12px}
+</style>
+</head>
+<body>
+<div class="shell">
+  <div class="tabs">
+    <button class="tab active" data-tab="admin">Админ</button>
+    <button class="tab" data-tab="user">Пользователь</button>
+    <span class="right muted">API: <span id="apiBase" class="pill mono">http://127.0.0.1:8000</span></span>
+  </div>
+
+  <!-- ADMIN -->
+  <section id="admin" class="grid cols-2">
+    <!-- Forms -->
+    <div class="panel">
+      <h2>Формы</h2>
+      <div class="row">
+        <label style="flex:1 1 180px">Код<input id="f_code" type="text" placeholder="loan_app" /></label>
+        <label style="flex:3 1 280px">Название<input id="f_title" type="text" placeholder="Заявка на кредит" /></label>
+      </div>
+      <label>Описание<textarea id="f_desc" placeholder="Описание формы"></textarea></label>
+      <div class="row"><button class="btn primary" id="btnCreateForm">Создать форму</button></div>
+      <div class="hr"></div>
+      <label>Текущая форма<select id="formsSelect"></select></label>
+      <div class="hint">start_step устанавливается на первый добавленный шаг</div>
+      <div id="formInfo" class="mono muted" style="margin-top:8px"></div>
+    </div>
+
+    <!-- Steps -->
+    <div class="panel">
+      <h2>Шаги формы</h2>
+      <div class="row">
+        <label style="flex:1 1 160px">Код<input id="s_code" type="text" placeholder="personal" /></label>
+        <label style="flex:2 1 220px">Название<input id="s_title" type="text" placeholder="Личные данные" /></label>
+      </div>
+      <div class="row">
+        <label style="flex:1 1 160px">Тип шага<select id="s_type"></select></label>
+        <label style="flex:1 1 120px">Порядок<input id="s_order" type="number" value="100" /></label>
+        <label style="flex:1 1 120px">Финальный?<input id="s_terminal" type="checkbox" /></label>
+      </div>
+      <div class="row">
+        <button class="btn primary" id="btnCreateStep">Добавить шаг</button>
+        <button class="btn ghost" id="btnReloadSteps">Обновить список</button>
+      </div>
+      <div class="hr"></div>
+      <div id="stepsList" class="list"></div>
+    </div>
+
+    <!-- Dictionaries -->
+    <div class="panel">
+      <h2>Справочники (для select/multiselect)</h2>
+      <div class="row">
+        <label style="flex:1 1 160px">Код<input id="d_code" type="text" placeholder="employment_type" /></label>
+        <label style="flex:2 1 260px">Название<input id="d_title" type="text" placeholder="Тип занятости" /></label>
+      </div>
+      <div id="dictValues" class="list"></div>
+      <div class="row">
+        <button class="btn ghost" id="btnAddDictVal">+ значение</button>
+        <button class="btn primary" id="btnCreateDict">Создать справочник</button>
+      </div>
+      <div class="hr"></div>
+      <label>Справочники<select id="dictsSelect"></select></label>
+    </div>
+
+    <!-- Fields -->
+    <div class="panel">
+      <h2>Поля шага</h2>
+      <div class="row">
+        <label style="flex:1 1 160px">Шаг<select id="fld_step"></select></label>
+        <label style="flex:1 1 160px">Код<input id="fld_code" type="text" placeholder="first_name" /></label>
+        <label style="flex:2 1 220px">Название<input id="fld_title" type="text" placeholder="Имя" /></label>
+      </div>
+      <div class="row">
+        <label style="flex:1 1 160px">Data Type<select id="fld_dtype"></select></label>
+        <label style="flex:1 1 160px">Input Type<select id="fld_input"></select></label>
+        <label style="flex:1 1 120px">Required?<input id="fld_req" type="checkbox" /></label>
+        <label style="flex:1 1 120px">Порядок<input id="fld_order" type="number" value="100" /></label>
+      </div>
+      <div id="fldDictRow" class="row" style="display:none">
+        <label style="flex:1 1 240px">Справочник<select id="fld_dict"></select></label>
+        <span class="hint">Или задайте локальные опции ниже</span>
+      </div>
+      <div id="fldOpts" class="list" style="display:none"></div>
+      <div class="row" id="fldOptsBtns" style="display:none">
+        <button class="btn ghost" id="btnAddFldOpt">+ опция</button>
+      </div>
+      <div class="row">
+        <button class="btn primary" id="btnCreateField">Добавить поле</button>
+        <button class="btn ghost" id="btnReloadFields">Показать поля шага</button>
+      </div>
+      <div class="hr"></div>
+      <div id="fieldsList" class="list"></div>
+    </div>
+
+    <!-- Transitions -->
+    <div class="panel" style="grid-column:1 / -1">
+      <h2>Переходы (условия → следующий шаг)</h2>
+      <div class="row">
+        <label style="flex:1 1 200px">Источник<select id="tr_src"></select></label>
+        <label style="flex:1 1 200px">Цель<select id="tr_dst"></select></label>
+        <label style="flex:1 1 120px">Приоритет<input type="number" id="tr_prio" value="100"/></label>
+        <label style="flex:1 1 160px">Логика<select id="tr_logic"><option>AND</option><option>OR</option></select></label>
+      </div>
+      <div id="condList" class="list"></div>
+      <div class="row">
+        <button class="btn ghost" id="btnAddCond">+ условие</button>
+        <span class="right"></span>
+        <button class="btn primary" id="btnCreateTransition">Создать переход</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- USER -->
+  <section id="user" class="grid cols-2" style="display:none">
+    <div class="panel">
+      <h2>Запуск анкеты</h2>
+      <div class="row">
+        <label style="flex:1 1 120px">User ID<input id="u_user" type="number" value="1"></label>
+        <label style="flex:3 1 260px">Форма<select id="u_form"></select></label>
+      </div>
+      <div class="row">
+        <button class="btn ok" id="btnStart">Старт</button>
+        <label class="pill">Instance: <span id="u_instance" class="mono">—</span></label>
+      </div>
+      <div class="hr"></div>
+      <div id="u_step"></div>
+    </div>
+
+    <div class="panel">
+      <h2>История / Отладка</h2>
+      <div id="log" class="code mono"></div>
+    </div>
+  </section>
+</div>
+
+<script>
+const API = document.getElementById('apiBase').textContent.trim(); // http://127.0.0.1:8000
+const $ = sel => document.querySelector(sel);
+const $$ = sel => Array.from(document.querySelectorAll(sel));
+
+function toast(msg, kind='info'){
+  const log = $('#log'); if(!log) return;
+  const color = {info:'#c7d2fe', ok:'#86efac', warn:'#fde68a', err:'#fecaca'}[kind] || '#c7d2fe';
+  log.innerHTML = `<div style="color:${color}">${new Date().toLocaleTimeString()} — ${msg}</div>` + log.innerHTML;
+}
+
+/* Tabs */
+$$('.tab').forEach(t=>{
+  t.onclick=()=>{$$('.tab').forEach(x=>x.classList.remove('active')); t.classList.add('active');
+    $('#admin').style.display = t.dataset.tab==='admin'?'grid':'none';
+    $('#user').style.display = t.dataset.tab==='user'?'grid':'none';
+  };
+});
+
+/* Caches */
+let cache = {
+  forms: [], steps: [], dicts: [], stepTypes: [], dtypes: [], itypes: [], ops:[]
+};
+
+/* Helpers */
+async function getJSON(url, opt={}){ const r=await fetch(url,opt); if(!r.ok){throw new Error(await r.text());} return r.json(); }
+function opt(value,label){ const o=document.createElement('option'); o.value=value; o.textContent=label; return o; }
+function rowKV(k,v){ return `<div class="item"><span class="k">${k}</span> <span class="muted">→</span> ${v}</div>` }
+
+/* Load dictionaries and refs */
+async function loadRefs(){
+  cache.stepTypes = await getJSON(`${API}/admin/steps?dummy`).catch(()=>[]); // Fallback (we'll load via dict endpoints)
+  const stepTypes = await (await fetch(`${API}/admin/forms`)).catch(()=>null); // just to ping
+  // reference endpoints:
+  cache.dicts = await getJSON(`${API}/admin/dictionaries`).catch(()=>[]);
+  cache.forms = await getJSON(`${API}/admin/forms`).catch(()=>[]);
+  // our dict-like tables:
+  cache.stepTypes = await getJSON(`${API}/admin/forms`).then(()=>getJSON(`${API}/admin/forms`)).catch(()=>[]);
+  // better: dedicated endpoints for dictionaries-of-types:
+  cache.stepTypeRows   = await getJSON(`${API}/dict/step_types`).catch(()=>[]);
+  cache.dataTypeRows   = await getJSON(`${API}/dict/field_data_types`).catch(()=>[]);
+  cache.inputTypeRows  = await getJSON(`${API}/dict/field_input_types`).catch(()=>[]);
+  cache.opsRows        = await getJSON(`${API}/dict/compare_ops`).catch(()=>[]);
+}
+
+/* Because your FastAPI doesn’t expose dict endpoints,
+   we’ll query via raw SQL-like endpoints you already have:
+   - step_types, field_data_types, field_input_types, compare_ops
+   We’ll implement minimal fetchers: */
+
+async function loadTableRows(name){
+  try{
+    const r = await fetch(`${API}/raw/${name}`); // optional custom route; if not present fallback via seed mirrors
+    if(r.ok) return r.json();
+  }catch(e){}
+  // fallback quick readers (used by /admin endpoints internally) — emulate with simplified GETs:
+  if(name==='step_types')      return [{code:'questionnaire',id:1,title:'Questionnaire'},{code:'upload',id:2,title:'File upload'},{code:'review',id:3,title:'Review'}];
+  if(name==='field_data_types')return [{code:'string',id:1,title:'String'},{code:'text',id:2,title:'Text'},{code:'integer',id:3,title:'Integer'},{code:'decimal',id:4,title:'Decimal'},{code:'boolean',id:5,title:'Boolean'},{code:'date',id:6,title:'Date'},{code:'datetime',id:7,title:'Datetime'}];
+  if(name==='field_input_types')return [{code:'input',id:1,title:'Input'},{code:'textarea',id:2,title:'Textarea'},{code:'select',id:3,title:'Select'},{code:'multiselect',id:4,title:'Multiselect'},{code:'checkbox',id:5,title:'Checkbox'},{code:'datepicker',id:6,title:'Date picker'}];
+  if(name==='compare_ops')     return [{code:'eq',id:1,title:'Equals'},{code:'ne',id:2,title:'Not equals'},{code:'is_true',id:3,title:'Is true'},{code:'is_false',id:4,title:'Is false'},{code:'is_empty',id:5,title:'Is empty'},{code:'not_empty',id:6,title:'Not empty'}];
+  return [];
+}
+
+async function refreshForms(){
+  cache.forms = await getJSON(`${API}/admin/forms`);
+  const sel = $('#formsSelect'); sel.innerHTML='';
+  const uform = $('#u_form'); uform.innerHTML='';
+  cache.forms.forEach(f=>{ sel.append(opt(f.id, `${f.title} (${f.code})`)); uform.append(opt(f.id, `${f.title}`)); });
+  if(cache.forms[0]) { sel.value = cache.forms[0].id; uform.value = cache.forms[0].id; showFormInfo(cache.forms[0]); await refreshSteps(); }
+}
+
+function showFormInfo(f){
+  $('#formInfo').textContent = `id=${f.id} start_step_id=${f.start_step_id ?? '—'} active=${f.is_active}`;
+}
+
+async function refreshSteps(){
+  const formId = +$('#formsSelect').value;
+  const rows = await getJSON(`${API}/admin/forms/${formId}/steps`);
+  cache.steps = rows;
+  const lists = [$('#stepsList'), $('#fld_step'), $('#tr_src'), $('#tr_dst')];
+  lists.forEach(el=> el && (el.innerHTML=''));
+  rows.forEach(s=>{
+    $('#stepsList').insertAdjacentHTML('beforeend', rowKV(`#${s.id} ${s.code}`, `${s.title} • order ${s.sort_order} ${s.is_terminal?'• финальный':''}`));
+    $('#fld_step').append(opt(s.id, `${s.title}`));
+    $('#tr_src').append(opt(s.id, `${s.title}`));
+    $('#tr_dst').append(opt(s.id, `${s.title}`));
+  });
+  if(rows[0]) $('#fld_step').value = rows[0].id;
+  await refreshFields();
+}
+
+async function refreshDicts(){
+  cache.dicts = await getJSON(`${API}/admin/dictionaries`);
+  const sel = $('#dictsSelect'); sel.innerHTML='';
+  const fldSel = $('#fld_dict'); fldSel.innerHTML='';
+  cache.dicts.forEach(d=>{ sel.append(opt(d.code, `${d.title} (${d.code})`)); fldSel.append(opt(d.code, `${d.title}`)); });
+}
+
+async function refreshRefs(){
+  const [stepTypes, dtypes, itypes, ops] = await Promise.all([
+    loadTableRows('step_types'), loadTableRows('field_data_types'),
+    loadTableRows('field_input_types'), loadTableRows('compare_ops')
+  ]);
+  cache.stepTypes=stepTypes; cache.dtypes=dtypes; cache.itypes=itypes; cache.ops=ops;
+  const sTypeSel = $('#s_type'); sTypeSel.innerHTML='';
+  stepTypes.forEach(x => sTypeSel.append(opt(x.code, x.title)));
+  const dtSel = $('#fld_dtype'); dtSel.innerHTML='';
+  dtypes.forEach(x => dtSel.append(opt(x.code, x.title)));
+  const itSel = $('#fld_input'); itSel.innerHTML='';
+  itypes.forEach(x => itSel.append(opt(x.code, x.title)));
+}
+
+async function refreshFields(){
+  const stepId = +$('#fld_step').value;
+  if(!stepId) return;
+  const rows = await getJSON(`${API}/admin/steps/${stepId}/fields`);
+  const list = $('#fieldsList'); list.innerHTML='';
+  rows.forEach(f=>{
+    const opts = (f.options||[]).map(o=>o.value_code).join(', ');
+    list.insertAdjacentHTML('beforeend', rowKV(`${f.code} [${f.input_type_code}/${f.data_type_code}]`, `${f.title} • order ${f.sort_order} ${opts?`• options: ${opts}`:''}`));
+  });
+}
+
+/* Admin actions */
+$('#btnCreateForm').onclick = async ()=>{
+  const payload = {code:$('#f_code').value.trim(), title:$('#f_title').value.trim(), description:$('#f_desc').value.trim()};
+  const r = await getJSON(`${API}/admin/forms`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)}).catch(e=>{toast(e.message,'err');});
+  if(r){ toast(`Создана форма #${r.id}`,'ok'); await refreshForms();}
+};
+
+$('#formsSelect').onchange = async ()=>{
+  const f = cache.forms.find(x=>x.id==$('#formsSelect').value);
+  if(f) showFormInfo(f); await refreshSteps();
+};
+
+$('#btnCreateStep').onclick = async ()=>{
+  const formId = +$('#formsSelect').value;
+  const payload = {code:$('#s_code').value.trim(), title:$('#s_title').value.trim(), step_type_code:$('#s_type').value, sort_order:+$('#s_order').value, is_terminal:$('#s_terminal').checked};
+  const r = await getJSON(`${API}/admin/forms/${formId}/steps`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)}).catch(e=>toast(e.message,'err'));
+  if(r){ toast(`Добавлен шаг #${r.id}`,'ok'); await refreshSteps(); }
+};
+
+$('#btnReloadSteps').onclick = refreshSteps;
+
+/* Dict creation UI */
+function addDictValueRow(){
+  const wrap = document.createElement('div'); wrap.className='row';
+  wrap.innerHTML = `
+    <label style="flex:1 1 160px">Код<input type="text" class="dv_code" placeholder="self_employed"></label>
+    <label style="flex:2 1 220px">Значение<input type="text" class="dv_label" placeholder="Самозанятый"></label>
+    <label style="flex:1 1 120px">Порядок<input type="number" class="dv_sort" value="100"></label>
+    <button class="btn error" onclick="this.parentElement.remove()">×</button>`;
+  $('#dictValues').append(wrap);
+}
+$('#btnAddDictVal').onclick = addDictValueRow;
+
+$('#btnCreateDict').onclick = async ()=>{
+  const values = $$('#dictValues .row').map(r=>({
+    value_code:r.querySelector('.dv_code').value.trim(),
+    value_label:r.querySelector('.dv_label').value.trim(),
+    sort_order:+r.querySelector('.dv_sort').value||100
+  })).filter(v=>v.value_code);
+  const payload = {code:$('#d_code').value.trim(), title:$('#d_title').value.trim(), values};
+  const r = await getJSON(`${API}/admin/dictionaries`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)}).catch(e=>toast(e.message,'err'));
+  if(r){ toast(`Создан справочник ${r.code}`,'ok'); $('#dictValues').innerHTML=''; await refreshDicts(); }
+};
+
+$('#fld_input').onchange = ()=>{
+  const t = $('#fld_input').value;
+  const showSelect = (t==='select'||t==='multiselect');
+  $('#fldDictRow').style.display = showSelect?'flex':'none';
+  $('#fldOpts').style.display = showSelect?'block':'none';
+  $('#fldOptsBtns').style.display = showSelect?'flex':'none';
+};
+
+function addFieldOptionRow(){
+  const wrap=document.createElement('div'); wrap.className='row';
+  wrap.innerHTML = `
+    <label style="flex:1 1 160px">Код<input type="text" class="fo_code" placeholder="full_time"></label>
+    <label style="flex:2 1 220px">Метка<input type="text" class="fo_label" placeholder="Полная занятость"></label>
+    <label style="flex:1 1 120px">Порядок<input type="number" class="fo_sort" value="100"></label>
+    <button class="btn error" onclick="this.parentElement.remove()">×</button>`;
+  $('#fldOpts').append(wrap);
+}
+$('#btnAddFldOpt').onclick = addFieldOptionRow;
+
+$('#btnCreateField').onclick = async ()=>{
+  const stepId = +$('#fld_step').value;
+  const payload = {
+    code:$('#fld_code').value.trim(),
+    title:$('#fld_title').value.trim(),
+    data_type_code:$('#fld_dtype').value,
+    input_type_code:$('#fld_input').value,
+    is_required:$('#fld_req').checked,
+    sort_order:+$('#fld_order').value||100
+  };
+  const dictCode = $('#fld_dict').value;
+  const hasLocalOpts = $$('#fldOpts .row').length>0;
+  if((payload.input_type_code==='select'||payload.input_type_code==='multiselect')){
+    if(hasLocalOpts){
+      payload.options = $$('#fldOpts .row').map(r=>({
+        value_code:r.querySelector('.fo_code').value.trim(),
+        value_label:r.querySelector('.fo_label').value.trim(),
+        sort_order:+r.querySelector('.fo_sort').value||100
+      })).filter(v=>v.value_code);
+    }else{
+      payload.dictionary_code = dictCode || null;
+    }
+  }
+  const r = await getJSON(`${API}/admin/steps/${stepId}/fields`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)}).catch(e=>toast(e.message,'err'));
+  if(r){ toast(`Поле создано: ${r.code}`,'ok'); await refreshFields(); }
+};
+
+$('#btnReloadFields').onclick = refreshFields;
+
+/* Transition builder */
+function addCondRow(){
+  const wrap=document.createElement('div'); wrap.className='row item';
+  const fields = cacheFormFields(); // all fields in form
+  wrap.innerHTML = `
+    <label style="flex:2 1 220px">Поле
+      <select class="c_field">${fields.map(f=>`<option value="${f.code}" data-dtype="${f.data_type_code}" data-input="${f.input_type_code}">${f.step_title} • ${f.title}</option>`).join('')}</select>
+    </label>
+    <label style="flex:1 1 140px">Оператор
+      <select class="c_op">${cache.ops.map(o=>`<option value="${o.code}">${o.title}</option>`).join('')}</select>
+    </label>
+    <label style="flex:2 1 220px">Значение
+      <input class="c_val" type="text" placeholder="значение / option_code"/>
+    </label>
+    <button class="btn error" onclick="this.parentElement.remove()">×</button>
+  `;
+  $('#condList').append(wrap);
+}
+function cacheFormFields(){
+  const formId = +$('#formsSelect').value;
+  const steps = cache.steps.filter(s=>s.form_id==formId);
+  const acc=[];
+  return acc; // will be filled by refreshTransitionFields
+}
+async function refreshTransitionFields(){
+  const formId = +$('#formsSelect').value;
+  const steps = await getJSON(`${API}/admin/forms/${formId}/steps`);
+  const fieldRows = [];
+  for(const s of steps){
+    const fs = await getJSON(`${API}/admin/steps/${s.id}/fields`);
+    fs.forEach(f=>fieldRows.push({...f, step_title:s.title}));
+  }
+  window.__formFields = fieldRows;
+}
+function getFormFields(){ return window.__formFields || []; }
+
+$('#btnAddCond').onclick = ()=>{
+  const fields = getFormFields();
+  if(!fields.length){ toast('Сначала загрузите поля формы (кнопка "Показать поля шага")','warn'); return;}
+  const wrap=document.createElement('div'); wrap.className='row item';
+  wrap.innerHTML = `
+    <label style="flex:2 1 260px">Поле
+      <select class="c_field">
+        ${fields.map(f=>`<option value="${f.code}" data-dtype="${f.data_type_code}" data-input="${f.input_type_code}">${f.step_title} • ${f.title} (${f.code})</option>`).join('')}
+      </select>
+    </label>
+    <label style="flex:1 1 160px">Оператор
+      <select class="c_op">${cache.ops.map(o=>`<option value="${o.code}">${o.title}</option>`).join('')}</select>
+    </label>
+    <label style="flex:2 1 260px">Значение
+      <input class="c_val" type="text" placeholder="value / option_code / true|false"/>
+    </label>
+    <button class="btn error" onclick="this.parentElement.remove()">×</button>`;
+  $('#condList').append(wrap);
+};
+
+$('#btnCreateTransition').onclick = async ()=>{
+  const formId = +$('#formsSelect').value;
+  const payload = {
+    source_step_id:+$('#tr_src').value,
+    target_step_id:+$('#tr_dst').value,
+    priority:+$('#tr_prio').value||100,
+    description:'UI transition',
+    logic_op:$('#tr_logic').value,
+    conditions: $$('#condList .row').map(r=>({
+      field_code:r.querySelector('.c_field').value,
+      op_code:r.querySelector('.c_op').value,
+      value_text: null,
+      value_num: null,
+      value_bool: null,
+      value_date: null,
+      option_code: null
+    })).map(c=>{
+      // try to coerce bools and numbers quickly from text input:
+      const raw = ($$('#condList .row')[0].querySelector('.c_val').value||'').trim();
+      return c; // backend supports several fields; here we keep simple: user types option_code or text/bool
+    })
+  };
+  // fill each condition's value from its row inputs appropriately
+  const rows = $$('#condList .row');
+  payload.conditions = rows.map(r=>{
+    const op = r.querySelector('.c_op').value;
+    const fieldCode = r.querySelector('.c_field').value;
+    const raw = r.querySelector('.c_val').value.trim();
+    const f = getFormFields().find(x=>x.code===fieldCode) || {};
+    const cond = {field_code:fieldCode, op_code:op, value_text:null, value_num:null, value_bool:null, value_date:null, option_code:null};
+    if(op==='is_true'||op==='is_false'||op==='is_empty'||op==='not_empty'){
+      // nothing else needed
+    } else if((f.input_type_code==='select'||f.input_type_code==='multiselect')){
+      cond.option_code = raw; // ожидаем value_code
+    } else if(f.data_type_code==='integer' || f.data_type_code==='decimal'){
+      cond.value_num = parseFloat(raw);
+    } else if(f.data_type_code==='boolean'){
+      cond.value_bool = (raw.toLowerCase()==='true');
+    } else if(f.data_type_code==='date'){
+      cond.value_date = raw;
+    } else {
+      cond.value_text = raw;
+    }
+    return cond;
+  });
+
+  const r = await getJSON(`${API}/admin/forms/${formId}/transitions`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)}).catch(e=>toast(e.message,'err'));
+  if(r){ toast(`Создан переход #${r.id} (${r.logic_op})`,'ok'); $('#condList').innerHTML=''; }
+};
+
+/* USER runtime */
+let CURRENT_INSTANCE = null;
+
+async function renderStep(resp){
+  CURRENT_INSTANCE = resp.instance_id;
+  $('#u_instance').textContent = CURRENT_INSTANCE;
+  const wrap = $('#u_step'); wrap.innerHTML='';
+  if(resp.is_terminal){
+    wrap.innerHTML = `<h3>${resp.step_title}</h3><div class="pill">Финальный шаг</div>`;
+    return;
+  }
+  const form = document.createElement('div');
+  form.innerHTML = `<h3 style="margin-bottom:10px">${resp.step_title}</h3>`;
+  resp.fields.forEach(f=>{
+    const row = document.createElement('div'); row.className='row'; row.style.marginBottom='8px';
+    const label = document.createElement('label'); label.style.flex='1 1 100%';
+    label.innerHTML = `<span class="muted">${f.title} ${f.is_required?'<span class="badge">обязательно</span>':''}</span>`;
+    let ctrl;
+    if(f.input_type==='textarea'){
+      ctrl = document.createElement('textarea');
+    } else if(f.input_type==='select'){
+      ctrl = document.createElement('select');
+      ctrl.appendChild(opt('','— выберите —'));
+      (f.options||[]).forEach(o=>ctrl.appendChild(opt(o.value_code,o.value_label)));
+    } else if(f.input_type==='multiselect'){
+      ctrl = document.createElement('select'); ctrl.multiple = true; ctrl.size= Math.min(6, (f.options||[]).length||3);
+      (f.options||[]).forEach(o=>ctrl.appendChild(opt(o.value_code,o.value_label)));
+    } else if(f.input_type==='checkbox'){
+      ctrl = document.createElement('input'); ctrl.type='checkbox';
+    } else if(f.input_type==='datepicker'){
+      ctrl = document.createElement('input'); ctrl.type='date';
+    } else {
+      ctrl = document.createElement('input'); ctrl.type='text';
+    }
+    ctrl.dataset.code = f.code;
+    // prefills
+    const v = (resp.values||{})[f.code];
+    if(v!==undefined && v!==null){
+      if(ctrl.tagName==='SELECT' && !ctrl.multiple){ ctrl.value = v; }
+      else if(ctrl.tagName==='SELECT' && ctrl.multiple){
+        (Array.isArray(v)?v:[]).forEach(val=>{
+          const optEl = Array.from(ctrl.options).find(o=>o.value==val); if(optEl) optEl.selected = true;
+        });
+      }
+      else if(ctrl.type==='checkbox'){ ctrl.checked = !!v; }
+      else ctrl.value = v;
+    }
+    label.appendChild(ctrl); row.appendChild(label); form.appendChild(row);
+  });
+  const actions = document.createElement('div'); actions.className='row';
+  const btn = document.createElement('button'); btn.className='btn ok'; btn.textContent='Далее';
+  btn.onclick = async ()=>{
+    const answers=[];
+    resp.fields.forEach(f=>{
+      const el = wrap.querySelector(`[data-code="${f.code}"]`);
+      let val=null;
+      if(!el) return;
+      if(el.tagName==='SELECT' && el.multiple){
+        val = Array.from(el.selectedOptions).map(o=>o.value); // TODO: add endpoint support for multiselect
+      }else if(el.type==='checkbox'){ val = el.checked; }
+      else { val = el.value; }
+      answers.push({field_code:f.code, value:val});
+    });
+    const r = await getJSON(`${API}/instance/${resp.instance_id}/submit`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({answers})}).catch(e=>toast(e.message,'err'));
+    if(r){
+      toast(`Ответы сохранены. ${r.is_complete?'Готово':'Следующий шаг: '+r.next_step_id}`,'ok');
+      if(r.is_complete){ wrap.innerHTML = `<div class="pill">Анкета завершена</div>`; }
+      else{
+        const next = await getJSON(`${API}/instance/${resp.instance_id}`);
+        await renderStep(next);
+      }
+    }
+  };
+  actions.appendChild(btn);
+  form.appendChild(actions);
+  wrap.appendChild(form);
+}
+
+$('#btnStart').onclick = async ()=>{
+  const userId = +$('#u_user').value; const formId = +$('#u_form').value;
+  const r = await getJSON(`${API}/start`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({user_id:userId, form_id:formId})}).catch(e=>toast(e.message,'err'));
+  if(r){ await renderStep(r); }
+};
+
+/* boot */
+(async function boot(){
+  await refreshRefs();
+  await refreshForms();
+  await refreshDicts();
+  await refreshTransitionFields();
+  // defaults
+  addDictValueRow();
+})();
+</script>
+</body>
+</html>
