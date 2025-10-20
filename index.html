@@ -54,6 +54,22 @@
   .hr{height:1px;background:#1f2a3f;margin:16px 0}
   .code{white-space:pre-wrap; background:#0a1022; border:1px solid #1d2640; padding:10px; border-radius:10px}
   .badge{padding:2px 6px;border-radius:8px;background:#0c1429;border:1px solid #29344f;color:#c7d2fe;font-size:12px}
+  .view{display:none}
+  .admin-layout{display:grid;grid-template-columns:320px minmax(0,1fr);gap:16px}
+  .stack{display:flex;flex-direction:column;gap:16px}
+  .panel-header{display:flex;align-items:flex-start;gap:12px;justify-content:space-between;margin-bottom:12px}
+  .panel-header h2{margin:0}
+  .panel-body{display:flex;flex-direction:column;gap:16px}
+  .segment{display:flex;flex-direction:column;gap:12px;padding:12px;border-radius:12px;background:rgba(15,23,42,.7);border:1px dashed #1f2937}
+  .segment-title{font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:#c7d2fe}
+  .toolbar{display:flex;gap:8px;flex-wrap:wrap}
+  .flow{display:grid;gap:12px}
+  .flow.cols-2{grid-template-columns:repeat(auto-fit,minmax(180px,1fr))}
+  .hint-block{font-size:13px;line-height:1.5;color:#c7d2fe;background:rgba(76,29,149,.15);border:1px solid rgba(76,29,149,.35);border-radius:12px;padding:12px}
+  .list-header{display:flex;align-items:center;justify-content:space-between;font-size:13px;color:var(--muted)}
+  .pill-group{display:flex;flex-wrap:wrap;gap:6px}
+  @media (max-width:1100px){.admin-layout{grid-template-columns:1fr}}
+  @media (max-width:720px){.tabs{flex-wrap:wrap}}
 </style>
 </head>
 <body>
@@ -61,135 +77,216 @@
   <div class="tabs">
     <button class="tab active" data-tab="admin">Админ</button>
     <button class="tab" data-tab="user">Пользователь</button>
+    <button class="tab" data-tab="archive">Анкеты</button>
     <span class="right muted">API: <span id="apiBase" class="pill mono">http://127.0.0.1:8000</span></span>
   </div>
 
   <!-- ADMIN -->
-  <section id="admin" class="grid cols-2">
-    <!-- Forms -->
-    <div class="panel">
-      <h2>Формы</h2>
-      <div class="row">
-        <label style="flex:1 1 180px">Код<input id="f_code" type="text" placeholder="loan_app" /></label>
-        <label style="flex:3 1 280px">Название<input id="f_title" type="text" placeholder="Заявка на кредит" /></label>
-      </div>
-      <label>Описание<textarea id="f_desc" placeholder="Описание формы"></textarea></label>
-      <div class="row"><button class="btn primary" id="btnCreateForm">Создать форму</button></div>
-      <div class="hr"></div>
-      <label>Текущая форма<select id="formsSelect"></select></label>
-      <div class="hint">start_step устанавливается на первый добавленный шаг</div>
-      <div id="formInfo" class="mono muted" style="margin-top:8px"></div>
-    </div>
-
-    <!-- Steps -->
-    <div class="panel">
-      <h2>Шаги формы</h2>
-      <div class="row">
-        <label style="flex:1 1 160px">Код<input id="s_code" type="text" placeholder="personal" /></label>
-        <label style="flex:2 1 220px">Название<input id="s_title" type="text" placeholder="Личные данные" /></label>
-      </div>
-      <div class="row">
-        <label style="flex:1 1 160px">Тип шага<select id="s_type"></select></label>
-        <label style="flex:1 1 120px">Порядок<input id="s_order" type="number" value="100" /></label>
-        <label style="flex:1 1 120px">Финальный?<input id="s_terminal" type="checkbox" /></label>
-        <label style="flex:1 1 140px">Стартовый?<input id="s_start" type="checkbox" /></label>
-      </div>
-      <div class="row">
-        <button class="btn primary" id="btnCreateStep">Добавить шаг</button>
-        <button class="btn ok" id="btnUpdateStep">Сохранить изменения</button>
-        <button class="btn ghost" id="btnResetStep">Очистить</button>
-        <button class="btn ghost" id="btnReloadSteps">Обновить список</button>
-      </div>
-      <div class="hr"></div>
-      <div id="stepsList" class="list"></div>
-    </div>
-
-    <!-- Dictionaries -->
-    <div class="panel">
-      <h2>Справочники (для select/multiselect)</h2>
-      <div class="row">
-        <label style="flex:1 1 160px">Код<input id="d_code" type="text" placeholder="employment_type" /></label>
-        <label style="flex:2 1 260px">Название<input id="d_title" type="text" placeholder="Тип занятости" /></label>
-      </div>
-      <div id="dictValues" class="list"></div>
-      <div class="row">
-        <button class="btn ghost" id="btnAddDictVal">+ значение</button>
-        <button class="btn primary" id="btnCreateDict">Создать справочник</button>
-      </div>
-      <div class="hr"></div>
-      <label>Справочники<select id="dictsSelect"></select></label>
-    </div>
-
-    <!-- Fields -->
-    <div class="panel">
-      <h2>Поля шага</h2>
-      <div class="row">
-        <label style="flex:1 1 160px">Шаг<select id="fld_step"></select></label>
-        <label style="flex:1 1 160px">Код<input id="fld_code" type="text" placeholder="first_name" /></label>
-        <label style="flex:2 1 220px">Название<input id="fld_title" type="text" placeholder="Имя" /></label>
-      </div>
-      <div class="row">
-        <label style="flex:1 1 160px">Data Type<select id="fld_dtype"></select></label>
-        <label style="flex:1 1 160px">Input Type<select id="fld_input"></select></label>
-        <label style="flex:1 1 120px">Required?<input id="fld_req" type="checkbox" /></label>
-        <label style="flex:1 1 120px">Порядок<input id="fld_order" type="number" value="100" /></label>
-      </div>
-      <div id="fldDictRow" class="row" style="display:none">
-        <label style="flex:1 1 240px">Справочник<select id="fld_dict"></select></label>
-        <span class="hint">Или задайте локальные опции ниже</span>
-      </div>
-      <div id="fldOpts" class="list" style="display:none"></div>
-      <div class="row" id="fldOptsBtns" style="display:none">
-        <button class="btn ghost" id="btnAddFldOpt">+ опция</button>
-      </div>
-      <div class="row">
-        <button class="btn primary" id="btnCreateField">Добавить поле</button>
-        <button class="btn ok" id="btnUpdateField">Сохранить изменения</button>
-        <button class="btn ghost" id="btnResetField">Очистить</button>
-        <button class="btn ghost" id="btnReloadFields">Обновить</button>
-      </div>
-      <div class="hr"></div>
-      <div id="fieldsList" class="list"></div>
-      <div class="hr"></div>
-      <h3 style="margin:0 0 8px">Правила видимости выбранного шага</h3>
-      <div id="visibilityList" class="list"></div>
-    </div>
-
-    <!-- Transitions -->
-    <div class="panel" style="grid-column:1 / -1">
-      <h2>Переходы (условия → следующий шаг)</h2>
-      <div class="row">
-        <label style="flex:1 1 200px">Источник<select id="tr_src"></select></label>
-        <label style="flex:1 1 200px">Цель<select id="tr_dst"></select></label>
-        <label style="flex:1 1 120px">Приоритет<input type="number" id="tr_prio" value="100"/></label>
-        <label style="flex:1 1 160px">Логика<select id="tr_logic"><option>AND</option><option>OR</option></select></label>
-      </div>
-      <div class="hr"></div>
-      <h3 style="margin:0 0 8px">Существующие переходы</h3>
-      <div id="routesList" class="list"></div>
-      <div class="hr"></div>
-      <h3 style="margin:0 0 8px">Конструктор нового перехода</h3>
-      <div id="condList" class="list"></div>
-      <div class="row">
-        <button class="btn ghost" id="btnAddCond">+ условие</button>
-        <span class="right"></span>
-        <button class="btn primary" id="btnCreateTransition">Создать переход</button>
-      </div>
-    </div>
-
-    <!-- Instances -->
-    <div class="panel" style="grid-column:1 / -1">
-      <h2>Заполненные анкеты</h2>
-      <div class="row">
-        <span class="hint">Используется текущая форма</span>
-        <span class="right"><button class="btn ghost" id="btnReloadInstances">Обновить</button></span>
-      </div>
-      <div class="grid cols-2" style="gap:12px">
-        <div>
-          <div id="instancesList" class="list"></div>
+  <section id="admin" data-display="block" style="display:block">
+    <div class="admin-layout">
+      <aside class="stack">
+        <div class="panel">
+          <div class="panel-header">
+            <h2>Формы</h2>
+            <span class="badge">Контур</span>
+          </div>
+          <div class="panel-body">
+            <div class="segment">
+              <div class="segment-title">Новая форма</div>
+              <div class="row">
+                <label style="flex:1 1 160px">Код<input id="f_code" type="text" placeholder="loan_app" /></label>
+                <label style="flex:1 1 240px">Название<input id="f_title" type="text" placeholder="Заявка на кредит" /></label>
+              </div>
+              <label>Описание<textarea id="f_desc" placeholder="Описание формы"></textarea></label>
+              <div class="toolbar"><button class="btn primary" id="btnCreateForm">Создать форму</button></div>
+            </div>
+            <div class="segment">
+              <div class="segment-title">Работа с текущей формой</div>
+              <label>Текущая форма<select id="formsSelect"></select></label>
+              <div class="hint">start_step устанавливается на первый добавленный шаг</div>
+              <div id="formInfo" class="mono muted"></div>
+              <div class="hint-block">Выберите форму, чтобы управлять шагами, полями и маршрутами. Все изменения сразу доступны в рантайме.</div>
+            </div>
+          </div>
         </div>
-        <div>
-          <div id="instanceDetails" class="code mono" style="min-height:220px">Выберите инстанс формы</div>
+
+        <div class="panel">
+          <div class="panel-header">
+            <h2>Маршрут шагов</h2>
+            <span class="muted mono">Выберите и настройте шаг</span>
+          </div>
+          <div class="panel-body">
+            <div class="segment">
+              <div class="segment-title">Карточка шага</div>
+              <div class="row">
+                <label style="flex:1 1 160px">Код<input id="s_code" type="text" placeholder="personal" /></label>
+                <label style="flex:1 1 200px">Название<input id="s_title" type="text" placeholder="Личные данные" /></label>
+              </div>
+              <div class="row">
+                <label style="flex:1 1 160px">Тип шага<select id="s_type"></select></label>
+                <label style="flex:1 1 120px">Порядок<input id="s_order" type="number" value="100" /></label>
+              </div>
+              <div class="row">
+                <label style="flex:1 1 140px">Финальный?<input id="s_terminal" type="checkbox" /></label>
+                <label style="flex:1 1 140px">Стартовый?<input id="s_start" type="checkbox" /></label>
+              </div>
+              <div class="toolbar">
+                <button class="btn primary" id="btnCreateStep">Добавить шаг</button>
+                <button class="btn ok" id="btnUpdateStep">Сохранить изменения</button>
+                <button class="btn ghost" id="btnResetStep">Очистить</button>
+                <button class="btn ghost" id="btnReloadSteps">Обновить список</button>
+              </div>
+            </div>
+            <div class="segment">
+              <div class="segment-title">Навигатор шагов</div>
+              <div class="hint-block">Переключайтесь между шагами, чтобы сразу увидеть их поля, правила видимости и сценарии переходов.</div>
+              <div id="stepsList" class="list"></div>
+            </div>
+          </div>
+        </div>
+      </aside>
+
+      <main class="stack">
+        <div class="panel">
+          <div class="panel-header">
+            <h2>Конструктор шага</h2>
+            <span class="muted mono">Поля и условия видимости</span>
+          </div>
+          <div class="panel-body">
+            <div class="hint-block">Соберите структуру шага, настройте обязательность, справочники и условия видимости. Видимость полей можно связать с любыми значениями на текущем или предыдущих шагах.</div>
+            <div class="segment">
+              <div class="segment-title">Добавление поля</div>
+              <div class="row">
+                <label style="flex:1 1 160px">Шаг<select id="fld_step"></select></label>
+                <label style="flex:1 1 160px">Код<input id="fld_code" type="text" placeholder="first_name" /></label>
+                <label style="flex:1 1 200px">Название<input id="fld_title" type="text" placeholder="Имя" /></label>
+              </div>
+              <div class="row">
+                <label style="flex:1 1 160px">Data Type<select id="fld_dtype"></select></label>
+                <label style="flex:1 1 160px">Input Type<select id="fld_input"></select></label>
+                <label style="flex:1 1 140px">Required?<input id="fld_req" type="checkbox" /></label>
+                <label style="flex:1 1 140px">Порядок<input id="fld_order" type="number" value="100" /></label>
+              </div>
+              <div id="fldDictRow" class="row" style="display:none">
+                <label style="flex:1 1 240px">Справочник<select id="fld_dict"></select></label>
+                <span class="hint">Или задайте локальные опции ниже</span>
+              </div>
+              <div id="fldOpts" class="list" style="display:none"></div>
+              <div class="toolbar" id="fldOptsBtns" style="display:none">
+                <button class="btn ghost" id="btnAddFldOpt">+ опция</button>
+              </div>
+              <div class="toolbar">
+                <button class="btn primary" id="btnCreateField">Добавить поле</button>
+                <button class="btn ok" id="btnUpdateField">Сохранить изменения</button>
+                <button class="btn ghost" id="btnResetField">Очистить</button>
+                <button class="btn ghost" id="btnReloadFields">Обновить</button>
+              </div>
+            </div>
+            <div class="segment">
+              <div class="list-header">
+                <span>Поля шага</span>
+              </div>
+              <div id="fieldsList" class="list"></div>
+            </div>
+            <div class="segment">
+              <div class="list-header">
+                <span>Правила видимости</span>
+              </div>
+              <div class="hint">Настройте сценарии отображения уточняющих вопросов, зависящих от ответов пользователя.</div>
+              <div id="visibilityList" class="list"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-header">
+            <h2>Сценарии переходов</h2>
+            <span class="muted mono">Следующий шаг по условиям</span>
+          </div>
+          <div class="panel-body">
+            <div class="hint-block">Свяжите шаги между собой: в зависимости от ответов на предыдущих шагах можно переходить на разные ветки сценария.</div>
+            <div class="segment">
+              <div class="segment-title">Настройка перехода</div>
+              <div class="row">
+                <label style="flex:1 1 200px">Источник<select id="tr_src"></select></label>
+                <label style="flex:1 1 200px">Цель<select id="tr_dst"></select></label>
+              </div>
+              <div class="row">
+                <label style="flex:1 1 140px">Приоритет<input type="number" id="tr_prio" value="100"/></label>
+                <label style="flex:1 1 160px">Логика<select id="tr_logic"><option>AND</option><option>OR</option></select></label>
+              </div>
+            </div>
+            <div class="segment">
+              <div class="list-header">
+                <span>Существующие переходы</span>
+              </div>
+              <div id="routesList" class="list"></div>
+            </div>
+            <div class="segment">
+              <div class="list-header">
+                <span>Конструктор нового перехода</span>
+              </div>
+              <div id="condList" class="list"></div>
+              <div class="toolbar">
+                <button class="btn ghost" id="btnAddCond">+ условие</button>
+                <span class="right"></span>
+                <button class="btn primary" id="btnCreateTransition">Создать переход</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-header">
+            <h2>Справочники</h2>
+            <span class="muted">для select / multiselect</span>
+          </div>
+          <div class="panel-body">
+            <div class="segment">
+              <div class="segment-title">Новый справочник</div>
+              <div class="row">
+                <label style="flex:1 1 160px">Код<input id="d_code" type="text" placeholder="employment_type" /></label>
+                <label style="flex:1 1 220px">Название<input id="d_title" type="text" placeholder="Тип занятости" /></label>
+              </div>
+              <div id="dictValues" class="list"></div>
+              <div class="toolbar">
+                <button class="btn ghost" id="btnAddDictVal">+ значение</button>
+                <span class="right"></span>
+                <button class="btn primary" id="btnCreateDict">Создать справочник</button>
+              </div>
+            </div>
+            <div class="segment">
+              <div class="segment-title">Существующие справочники</div>
+              <label>Справочники<select id="dictsSelect"></select></label>
+            </div>
+          </div>
+        </div>
+      </main>
+    </div>
+  </section>
+
+  <!-- ARCHIVE -->
+  <section id="archive" data-display="block" style="display:none">
+    <div class="panel">
+      <div class="panel-header">
+        <h2>Заполненные анкеты</h2>
+        <span class="muted mono">По выбранной форме</span>
+      </div>
+      <div class="panel-body">
+        <div class="hint-block">Следите за живыми инстансами формы: ответы пользователя отображаются с учётом условий видимости и переходов, настроенных в конструкторе.</div>
+        <div class="toolbar">
+          <span class="muted">Используется текущая форма из вкладки «Админ»</span>
+          <span class="right"><button class="btn ghost" id="btnReloadInstances">Обновить</button></span>
+        </div>
+        <div class="grid cols-2" style="gap:12px">
+          <div class="segment" style="height:100%">
+            <div class="segment-title">Инстансы</div>
+            <div id="instancesList" class="list"></div>
+          </div>
+          <div class="segment" style="height:100%">
+            <div class="segment-title">Ответы и шаги</div>
+            <div id="instanceDetails" class="code mono" style="min-height:220px">Выберите инстанс формы</div>
+          </div>
         </div>
       </div>
     </div>
@@ -232,10 +329,19 @@ function toast(msg, kind='info'){
 }
 
 /* Tabs */
-$$('.tab').forEach(t=>{
-  t.onclick=()=>{$$('.tab').forEach(x=>x.classList.remove('active')); t.classList.add('active');
-    $('#admin').style.display = t.dataset.tab==='admin'?'grid':'none';
-    $('#user').style.display = t.dataset.tab==='user'?'grid':'none';
+const SECTION_DISPLAYS = {
+  admin: {el: document.getElementById('admin'), display: 'block'},
+  user: {el: document.getElementById('user'), display: 'grid'},
+  archive: {el: document.getElementById('archive'), display: 'block'}
+};
+$$('.tab').forEach(tab=>{
+  tab.onclick = ()=>{
+    $$('.tab').forEach(x=>x.classList.remove('active'));
+    tab.classList.add('active');
+    Object.entries(SECTION_DISPLAYS).forEach(([key, cfg])=>{
+      if(!cfg.el) return;
+      cfg.el.style.display = (tab.dataset.tab===key) ? cfg.display : 'none';
+    });
   };
 });
 
