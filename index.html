@@ -55,6 +55,13 @@
   .code{white-space:pre-wrap; background:#0a1022; border:1px solid #1d2640; padding:10px; border-radius:10px}
   .badge{padding:2px 6px;border-radius:8px;background:#0c1429;border:1px solid #29344f;color:#c7d2fe;font-size:12px}
   .view{display:none}
+  .toast-overlay{position:fixed;top:16px;right:16px;display:flex;flex-direction:column;gap:8px;z-index:9999;max-width:320px}
+  .toast-item{padding:10px 14px;border-radius:10px;background:rgba(30,41,59,.95);border:1px solid rgba(148,163,184,.45);font-size:14px;box-shadow:0 10px 30px rgba(15,23,42,.45);transition:opacity .4s ease,transform .4s ease}
+  .toast-item.info{border-color:#6366f1;color:#e0e7ff}
+  .toast-item.ok{border-color:#16a34a;color:#bbf7d0}
+  .toast-item.warn{border-color:#f59e0b;color:#fde68a}
+  .toast-item.err{border-color:#ef4444;color:#fecaca}
+  .toast-item.hide{opacity:0;transform:translateY(-10px)}
   .admin-layout{display:grid;grid-template-columns:320px minmax(0,1fr);gap:16px}
   .stack{display:flex;flex-direction:column;gap:16px}
   .panel-header{display:flex;align-items:flex-start;gap:12px;justify-content:space-between;margin-bottom:12px}
@@ -89,6 +96,7 @@
 </style>
 </head>
 <body>
+<div id="toastOverlay" class="toast-overlay" aria-live="polite" aria-atomic="true"></div>
 <div class="shell">
   <div class="tabs">
     <button class="tab active" data-tab="admin">Админ</button>
@@ -379,9 +387,22 @@ const $ = sel => document.querySelector(sel);
 const $$ = sel => Array.from(document.querySelectorAll(sel));
 
 function toast(msg, kind='info'){
-  const log = $('#log'); if(!log) return;
   const color = {info:'#c7d2fe', ok:'#86efac', warn:'#fde68a', err:'#fecaca'}[kind] || '#c7d2fe';
-  log.innerHTML = `<div style="color:${color}">${new Date().toLocaleTimeString()} — ${msg}</div>` + log.innerHTML;
+  const log = $('#log');
+  if(log){
+    log.innerHTML = `<div style="color:${color}">${new Date().toLocaleTimeString()} — ${msg}</div>` + log.innerHTML;
+  }
+  const overlay = $('#toastOverlay');
+  if(overlay){
+    const item = document.createElement('div');
+    item.className = `toast-item hide ${kind}`;
+    item.textContent = msg;
+    overlay.appendChild(item);
+    requestAnimationFrame(()=> item.classList.remove('hide'));
+    const ttl = 4200;
+    setTimeout(()=> item.classList.add('hide'), ttl - 400);
+    setTimeout(()=> item.remove(), ttl);
+  }
 }
 
 /* Tabs */
