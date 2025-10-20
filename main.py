@@ -60,6 +60,104 @@ async def _get_field_id_by_code(form_id: int, field_code: str) -> int:
     return row.id
 
 
+async def _ensure_step_in_form(form_id: int, step_id: int) -> None:
+    row = await database.fetch_one(
+        "SELECT id FROM form_steps WHERE id = :step_id AND form_id = :form_id",
+        {"step_id": step_id, "form_id": form_id}
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail=f"Шаг {step_id} не найден в форме {form_id}")
+
+
+async def _fetch_step(step_id: int) -> StepRead:
+    query = """
+        SELECT s.*, st.code AS step_type_code
+        FROM form_steps s
+        JOIN step_types st ON s.step_type_id = st.id
+        WHERE s.id = :step_id
+    """
+    row = await database.fetch_one(query, {"step_id": step_id})
+    if not row:
+        raise HTTPException(status_code=404, detail=f"Шаг {step_id} не найден")
+    return StepRead(**row)
+
+
+async def _fetch_route(route_id: int, form_id: int) -> StepRouteRead:
+    query_route = """
+        SELECT t.id, t.form_id, t.source_step_id, t.target_step_id, t.priority,
+               t.description, g.id AS condition_group_id, g.logic_op,
+               g.description AS scenario_description
+        FROM step_transitions t
+        JOIN condition_groups g ON t.condition_group_id = g.id
+        WHERE t.id = :route_id AND t.form_id = :form_id
+    """
+    route_row = await database.fetch_one(query_route, {"route_id": route_id, "form_id": form_id})
+    if not route_row:
+        raise HTTPException(status_code=404, detail=f"Переход {route_id} не найден в форме {form_id}")
+
+    query_conditions = """
+        SELECT c.id, c.field_id, c.op_id, c.value_text, c.value_num, c.value_bool,
+               c.value_date, c.option_code, c.position,
+               sf.code AS field_code, sf.title AS field_title,
+               rhs.code AS rhs_field_code,
+               co.code AS op_code, co.title AS op_title
+        FROM conditions c
+        JOIN step_fields sf ON c.field_id = sf.id
+        JOIN compare_ops co ON c.op_id = co.id
+        LEFT JOIN step_fields rhs ON c.rhs_field_id = rhs.id
+        WHERE c.group_id = :group_id
+        ORDER BY c.position
+    """
+    condition_rows = await database.fetch_all(
+        query_conditions, {"group_id": route_row.condition_group_id}
+    )
+
+    conditions = [
+        ConditionRead(
+            id=row.id,
+            field_code=row.field_code,
+            field_title=row.field_title,
+            op_code=row.op_code,
+            op_title=row.op_title,
+            value_text=row.value_text,
+            value_num=row.value_num,
+            value_bool=row.value_bool,
+            value_date=row.value_date,
+            option_code=row.option_code,
+            rhs_field_code=row.rhs_field_code,
+            position=row.position
+        )
+        for row in condition_rows
+    ]
+
+    return StepRouteRead(
+        id=route_row.id,
+        form_id=route_row.form_id,
+        source_step_id=route_row.source_step_id,
+        target_step_id=route_row.target_step_id,
+        priority=route_row.priority,
+        description=route_row.description,
+        scenario_description=route_row.scenario_description,
+        logic_op=route_row.logic_op,
+        condition_group_id=route_row.condition_group_id,
+        conditions=conditions
+    )
+
+
+async def _fetch_routes_for_step(form_id: int, step_id: int) -> List[StepRouteRead]:
+    query_ids = """
+        SELECT id
+        FROM step_transitions
+        WHERE form_id = :form_id AND source_step_id = :step_id
+        ORDER BY priority, id
+    """
+    rows = await database.fetch_all(query_ids, {"form_id": form_id, "step_id": step_id})
+    result: List[StepRouteRead] = []
+    for row in rows:
+        result.append(await _fetch_route(row.id, form_id))
+    return result
+
+
 # ====================================================================
 # 3. PYDANTIC МОДЕЛИ ДЛЯ "АДМИНКИ" (CRUD)
 # ====================================================================
@@ -96,6 +194,14 @@ class StepCreate(StepBase): pass
 class StepRead(StepBase):
     id: int
     form_id: int
+
+
+class StepUpdate(BaseModel):
+    title: Optional[str] = None
+    step_type_code: Optional[str] = None
+    sort_order: Optional[int] = None
+    is_terminal: Optional[bool] = None
+    is_start: Optional[bool] = None
 
 
 # --- Справочники (Dictionaries) <--- НОВОЕ
@@ -167,7 +273,7 @@ class FieldRead(FieldBase):
 
 
 # --- Условия и Переходы (Conditions & Transitions) ---
-class ConditionCreate(BaseModel):
+class ConditionBase(BaseModel):
     field_code: str
     op_code: str
     value_text: Optional[str] = None
@@ -175,21 +281,43 @@ class ConditionCreate(BaseModel):
     value_bool: Optional[bool] = None
     value_date: Optional[str] = None
     option_code: Optional[str] = None
+    rhs_field_code: Optional[str] = None
+    position: int = 100
 
 
-class TransitionCreate(BaseModel):
-    source_step_id: int
+class ConditionCreate(ConditionBase):
+    pass
+
+
+class ConditionRead(ConditionBase):
+    id: int
+    field_title: str
+    op_title: str
+
+
+class StepRouteBase(BaseModel):
     target_step_id: int
     priority: int = 100
     description: Optional[str] = None
+    scenario_description: Optional[str] = None
     logic_op: str = "AND"
-    conditions: List[ConditionCreate]
+    conditions: List[ConditionCreate] = []
 
 
-class TransitionRead(TransitionCreate):
+class StepRouteCreate(StepRouteBase):
+    pass
+
+
+class StepRouteUpdate(StepRouteBase):
+    pass
+
+
+class StepRouteRead(StepRouteBase):
     id: int
     form_id: int
+    source_step_id: int
     condition_group_id: int
+    conditions: List[ConditionRead]
 
 
 # ====================================================================
@@ -242,7 +370,7 @@ async def create_step(form_id: int, step: StepCreate):
             "UPDATE forms SET start_step_id = :step_id WHERE id = :form_id AND start_step_id IS NULL",
             {"step_id": new_step.id, "form_id": form_id}
         )
-        return new_step
+        return await _fetch_step(new_step.id)
     except sqlite3.IntegrityError as e:
         raise HTTPException(status_code=400, detail=f"Шаг с кодом '{step.code}' уже существует в этой форме. {e}")
 
@@ -250,11 +378,56 @@ async def create_step(form_id: int, step: StepCreate):
 @app.get("/admin/forms/{form_id}/steps", response_model=List[StepRead], tags=["Admin - Steps"])
 async def get_form_steps(form_id: int):
     query = """
-        SELECT s.*, st.code AS step_type_code
-        FROM form_steps s JOIN step_types st ON s.step_type_id = st.id
-        WHERE s.form_id = :form_id ORDER BY s.sort_order
+        SELECT s.id
+        FROM form_steps s
+        WHERE s.form_id = :form_id
+        ORDER BY s.sort_order, s.id
     """
-    return await database.fetch_all(query, {"form_id": form_id})
+    rows = await database.fetch_all(query, {"form_id": form_id})
+    result: List[StepRead] = []
+    for row in rows:
+        result.append(await _fetch_step(row.id))
+    return result
+
+
+@app.put("/admin/forms/{form_id}/steps/{step_id}", response_model=StepRead, tags=["Admin - Steps"])
+async def update_step(form_id: int, step_id: int, data: StepUpdate):
+    await _ensure_step_in_form(form_id, step_id)
+
+    update_parts = []
+    values: Dict[str, Any] = {"form_id": form_id, "step_id": step_id}
+
+    if data.title is not None:
+        update_parts.append("title = :title")
+        values["title"] = data.title
+    if data.sort_order is not None:
+        update_parts.append("sort_order = :sort_order")
+        values["sort_order"] = data.sort_order
+    if data.is_terminal is not None:
+        update_parts.append("is_terminal = :is_terminal")
+        values["is_terminal"] = data.is_terminal
+    if data.step_type_code is not None:
+        step_type_id = await _get_id_by_code("step_types", data.step_type_code)
+        update_parts.append("step_type_id = :step_type_id")
+        values["step_type_id"] = step_type_id
+
+    if update_parts:
+        query = "UPDATE form_steps SET " + ", ".join(update_parts) + " WHERE id = :step_id AND form_id = :form_id"
+        await database.execute(query, values)
+
+    if data.is_start is not None:
+        if data.is_start:
+            await database.execute(
+                "UPDATE forms SET start_step_id = :step_id WHERE id = :form_id",
+                {"step_id": step_id, "form_id": form_id}
+            )
+        else:
+            await database.execute(
+                "UPDATE forms SET start_step_id = NULL WHERE id = :form_id AND start_step_id = :step_id",
+                {"form_id": form_id, "step_id": step_id}
+            )
+
+    return await _fetch_step(step_id)
 
 
 # --- CRUD для Справочников (Dictionaries) <--- НОВОЕ ---
@@ -401,43 +574,236 @@ async def get_step_fields(step_id: int):
     return result
 
 
-# --- "Умный" CRUD для Переходов (Transitions) ---
-@app.post("/admin/forms/{form_id}/transitions", response_model=TransitionRead, tags=["Admin - Logic"])
-async def create_transition(form_id: int, transition: TransitionCreate):
-    """
-    Создает полный переход: Группу условий, Условия и сам Переход.
-    """
-    async with database.transaction():
-        query_group = "INSERT INTO condition_groups (form_id, logic_op, description) VALUES (:form_id, :logic_op, :description) RETURNING id"
-        group_id = await database.fetch_val(query=query_group, values={
-            "form_id": form_id, "logic_op": transition.logic_op,
-            "description": transition.description or "Transition group"
-        })
+# --- CRUD для маршрутов между шагами (Step Routes) ---
+@app.get(
+    "/admin/forms/{form_id}/steps/{step_id}/routes",
+    response_model=List[StepRouteRead],
+    tags=["Admin - Logic"]
+)
+async def list_step_routes(form_id: int, step_id: int):
+    await _ensure_step_in_form(form_id, step_id)
+    return await _fetch_routes_for_step(form_id, step_id)
 
-        for cond in transition.conditions:
+
+@app.post(
+    "/admin/forms/{form_id}/steps/{step_id}/routes",
+    response_model=StepRouteRead,
+    status_code=status.HTTP_201_CREATED,
+    tags=["Admin - Logic"]
+)
+async def create_step_route(form_id: int, step_id: int, route: StepRouteCreate):
+    await _ensure_step_in_form(form_id, step_id)
+    await _ensure_step_in_form(form_id, route.target_step_id)
+
+    async with database.transaction():
+        group_id = await database.fetch_val(
+            "INSERT INTO condition_groups (form_id, logic_op, description) VALUES (:form_id, :logic_op, :description) RETURNING id",
+            {
+                "form_id": form_id,
+                "logic_op": route.logic_op,
+                "description": route.scenario_description or "Transition group"
+            }
+        )
+
+        for cond in route.conditions:
             field_id = await _get_field_id_by_code(form_id, cond.field_code)
             op_id = await _get_id_by_code("compare_ops", cond.op_code)
+            rhs_field_id = None
+            if cond.rhs_field_code:
+                rhs_field_id = await _get_field_id_by_code(form_id, cond.rhs_field_code)
 
             query_cond = """
-                INSERT INTO conditions (group_id, field_id, op_id, value_text, value_num, value_bool, value_date, option_code)
-                VALUES (:gid, :fid, :opid, :v_txt, :v_num, :v_bool, :v_date, :v_opt)
+                INSERT INTO conditions (
+                    group_id, field_id, op_id, value_text, value_num, value_bool, value_date,
+                    option_code, rhs_field_id, position
+                )
+                VALUES (
+                    :gid, :fid, :opid, :v_txt, :v_num, :v_bool, :v_date,
+                    :v_opt, :rhs_id, :position
+                )
             """
             await database.execute(query_cond, {
-                "gid": group_id, "fid": field_id, "opid": op_id, "v_txt": cond.value_text,
-                "v_num": cond.value_num, "v_bool": cond.value_bool, "v_date": cond.value_date, "v_opt": cond.option_code
+                "gid": group_id,
+                "fid": field_id,
+                "opid": op_id,
+                "v_txt": cond.value_text,
+                "v_num": cond.value_num,
+                "v_bool": cond.value_bool,
+                "v_date": cond.value_date,
+                "v_opt": cond.option_code,
+                "rhs_id": rhs_field_id,
+                "position": cond.position,
             })
 
-        query_trans = """
-            INSERT INTO step_transitions (form_id, source_step_id, target_step_id, condition_group_id, priority, description)
-            VALUES (:form_id, :source_id, :target_id, :group_id, :priority, :description)
-            RETURNING id
-        """
-        trans_id = await database.fetch_val(query=query_trans, values={
-            "form_id": form_id, "source_id": transition.source_step_id, "target_id": transition.target_step_id,
-            "group_id": group_id, "priority": transition.priority, "description": transition.description
-        })
+        route_id = await database.fetch_val(
+            """
+                INSERT INTO step_transitions (
+                    form_id, source_step_id, target_step_id, condition_group_id, priority, description
+                )
+                VALUES (:form_id, :source_id, :target_id, :group_id, :priority, :description)
+                RETURNING id
+            """,
+            {
+                "form_id": form_id,
+                "source_id": step_id,
+                "target_id": route.target_step_id,
+                "group_id": group_id,
+                "priority": route.priority,
+                "description": route.description,
+            }
+        )
 
-    return TransitionRead(id=trans_id, form_id=form_id, condition_group_id=group_id, **transition.dict())
+    return await _fetch_route(route_id, form_id)
+
+
+@app.get(
+    "/admin/forms/{form_id}/routes/{route_id}",
+    response_model=StepRouteRead,
+    tags=["Admin - Logic"]
+)
+async def get_step_route(form_id: int, route_id: int):
+    return await _fetch_route(route_id, form_id)
+
+
+@app.put(
+    "/admin/forms/{form_id}/routes/{route_id}",
+    response_model=StepRouteRead,
+    tags=["Admin - Logic"]
+)
+async def update_step_route(form_id: int, route_id: int, route: StepRouteUpdate):
+    route_row = await database.fetch_one(
+        "SELECT condition_group_id, source_step_id FROM step_transitions WHERE id = :id AND form_id = :form_id",
+        {"id": route_id, "form_id": form_id}
+    )
+    if not route_row:
+        raise HTTPException(status_code=404, detail=f"Переход {route_id} не найден в форме {form_id}")
+
+    await _ensure_step_in_form(form_id, route.target_step_id)
+
+    async with database.transaction():
+        await database.execute(
+            "UPDATE step_transitions SET target_step_id = :target, priority = :priority, description = :description WHERE id = :id",
+            {
+                "target": route.target_step_id,
+                "priority": route.priority,
+                "description": route.description,
+                "id": route_id,
+            }
+        )
+
+        await database.execute(
+            "UPDATE condition_groups SET logic_op = :logic_op, description = :description WHERE id = :id",
+            {
+                "logic_op": route.logic_op,
+                "description": route.scenario_description,
+                "id": route_row.condition_group_id,
+            }
+        )
+
+        await database.execute(
+            "DELETE FROM conditions WHERE group_id = :group_id",
+            {"group_id": route_row.condition_group_id}
+        )
+
+        for cond in route.conditions:
+            field_id = await _get_field_id_by_code(form_id, cond.field_code)
+            op_id = await _get_id_by_code("compare_ops", cond.op_code)
+            rhs_field_id = None
+            if cond.rhs_field_code:
+                rhs_field_id = await _get_field_id_by_code(form_id, cond.rhs_field_code)
+
+            await database.execute(
+                """
+                    INSERT INTO conditions (
+                        group_id, field_id, op_id, value_text, value_num, value_bool, value_date,
+                        option_code, rhs_field_id, position
+                    )
+                    VALUES (
+                        :gid, :fid, :opid, :v_txt, :v_num, :v_bool, :v_date,
+                        :v_opt, :rhs_id, :position
+                    )
+                """,
+                {
+                    "gid": route_row.condition_group_id,
+                    "fid": field_id,
+                    "opid": op_id,
+                    "v_txt": cond.value_text,
+                    "v_num": cond.value_num,
+                    "v_bool": cond.value_bool,
+                    "v_date": cond.value_date,
+                    "v_opt": cond.option_code,
+                    "rhs_id": rhs_field_id,
+                    "position": cond.position,
+                }
+            )
+
+    return await _fetch_route(route_id, form_id)
+
+
+@app.get(
+    "/admin/forms/{form_id}/steps/{step_id}/graph",
+    tags=["Admin - Logic"]
+)
+async def get_step_graph(form_id: int, step_id: int):
+    await _ensure_step_in_form(form_id, step_id)
+
+    form = await database.fetch_one(
+        "SELECT start_step_id FROM forms WHERE id = :form_id",
+        {"form_id": form_id}
+    )
+    if not form:
+        raise HTTPException(status_code=404, detail=f"Форма {form_id} не найдена")
+
+    steps = await database.fetch_all(
+        """
+            SELECT id, code, title, sort_order, is_terminal
+            FROM form_steps
+            WHERE form_id = :form_id
+            ORDER BY sort_order, id
+        """,
+        {"form_id": form_id}
+    )
+
+    routes = await database.fetch_all(
+        """
+            SELECT t.id, t.source_step_id, t.target_step_id, t.priority,
+                   t.description, g.logic_op, g.description AS scenario_description
+            FROM step_transitions t
+            JOIN condition_groups g ON t.condition_group_id = g.id
+            WHERE t.form_id = :form_id
+            ORDER BY t.priority, t.id
+        """,
+        {"form_id": form_id}
+    )
+
+    return {
+        "focus_step_id": step_id,
+        "start_step_id": form.start_step_id,
+        "steps": [
+            {
+                "id": row.id,
+                "code": row.code,
+                "title": row.title,
+                "sort_order": row.sort_order,
+                "is_terminal": bool(row.is_terminal),
+                "is_start": row.id == form.start_step_id,
+                "is_focus": row.id == step_id,
+            }
+            for row in steps
+        ],
+        "routes": [
+            {
+                "id": row.id,
+                "source_step_id": row.source_step_id,
+                "target_step_id": row.target_step_id,
+                "priority": row.priority,
+                "description": row.description,
+                "scenario_description": row.scenario_description,
+                "logic_op": row.logic_op,
+            }
+            for row in routes
+        ],
+    }
 
 
 # TODO:
