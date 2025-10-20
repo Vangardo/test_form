@@ -1,7 +1,7 @@
 import uvicorn
 from fastapi import FastAPI, HTTPException, Depends, Body, status
-from pydantic import BaseModel, model_validator
-from typing import List, Any, Dict, Optional
+from pydantic import BaseModel, Field, model_validator
+from typing import List, Any, Dict, Optional, Tuple
 import databases
 import sqlite3
 from contextlib import asynccontextmanager
@@ -837,10 +837,14 @@ class UserStepField(BaseModel):
 class StepResponse(BaseModel):
     instance_id: int
     step_id: int
+    step_code: str
     step_title: str
     is_terminal: bool
     fields: List[UserStepField]
     values: Dict[str, Any]
+    current_step_code: Optional[str] = None
+    completed_steps: List[str] = Field(default_factory=list)
+    available_steps: List[str] = Field(default_factory=list)
 
 
 class Answer(BaseModel):
@@ -855,20 +859,173 @@ class SubmitStepRequest(BaseModel):
 class SubmitStepResponse(BaseModel):
     instance_id: int
     next_step_id: Optional[int]
+    next_step_code: Optional[str]
     is_complete: bool
+    completed_steps: List[str] = Field(default_factory=list)
+    available_steps: List[str] = Field(default_factory=list)
 
 
 # ====================================================================
 # 6. HELPER-ФУНКЦИИ ДЛЯ "РАНТАЙМА"
 # ====================================================================
 
-async def _get_step_details(instance_id: int, step_id: int) -> StepResponse:
+form_sessions: Dict[int, Dict[str, Any]] = {}
+
+
+async def _get_step_codes(step_ids: List[int]) -> Dict[int, str]:
+    """Возвращает словарь {step_id: step_code}."""
+    if not step_ids:
+        return {}
+
+    placeholders = ", ".join(f":sid_{idx}" for idx in range(len(step_ids)))
+    query = f"SELECT id, code FROM form_steps WHERE id IN ({placeholders})"
+    values = {f"sid_{idx}": step_id for idx, step_id in enumerate(step_ids)}
+
+    rows = await database.fetch_all(query, values)
+    return {row.id: row.code for row in rows}
+
+
+async def _get_step_id_by_code(form_id: int, step_code: str) -> int:
+    row = await database.fetch_one(
+        "SELECT id FROM form_steps WHERE form_id = :fid AND code = :code",
+        {"fid": form_id, "code": step_code}
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail=f"Шаг с кодом '{step_code}' не найден")
+    return row.id
+
+
+async def _get_valid_forward_steps(instance_id: int, source_step_id: int) -> List[int]:
+    """Возвращает список доступных шагов для перехода вперед."""
+    query = (
+        "SELECT target_step_id, condition_group_id "
+        "FROM step_transitions WHERE source_step_id = :id ORDER BY priority"
+    )
+    transitions = await database.fetch_all(query, {"id": source_step_id})
+    if not transitions:
+        return []
+
+    all_answers = await _get_all_answers(instance_id)
+
+    allowed: List[int] = []
+    for trans in transitions:
+        if await _evaluate_group(trans.condition_group_id, all_answers):
+            allowed.append(trans.target_step_id)
+    return allowed
+
+
+async def _get_navigation_summary(instance_id: int, current_step_id: Optional[int]) -> Dict[str, Any]:
+    """Строит список завершенных и доступных шагов для UI."""
+    completed_rows = await database.fetch_all(
+        """
+        SELECT fs.id, fs.code
+        FROM instance_steps ist
+        JOIN form_steps fs ON ist.step_id = fs.id
+        WHERE ist.instance_id = :instance_id AND ist.status_code = 'completed'
+        ORDER BY ist.entered_at
+        """,
+        {"instance_id": instance_id}
+    )
+
+    completed_codes = [row.code for row in completed_rows]
+    available_codes: List[str] = list(dict.fromkeys(completed_codes))
+    current_code: Optional[str] = None
+
+    if current_step_id:
+        current_row = await database.fetch_one(
+            "SELECT code FROM form_steps WHERE id = :id",
+            {"id": current_step_id}
+        )
+        if current_row:
+            current_code = current_row.code
+            if current_code not in available_codes:
+                available_codes.append(current_code)
+
+        forward_ids = await _get_valid_forward_steps(instance_id, current_step_id)
+        if forward_ids:
+            forward_codes_map = await _get_step_codes(forward_ids)
+            for step_id in forward_ids:
+                code = forward_codes_map.get(step_id)
+                if code and code not in available_codes:
+                    available_codes.append(code)
+
+    return {
+        "current_step_code": current_code,
+        "completed_steps": completed_codes,
+        "available_steps": available_codes,
+    }
+
+
+async def _sync_session_state(instance_id: int) -> Dict[str, Any]:
+    """Обновляет кеш состояния сессии и возвращает его."""
+    session_row = await database.fetch_one(
+        "SELECT form_id, current_step_id FROM form_instances WHERE id = :id",
+        {"id": instance_id}
+    )
+    if not session_row:
+        raise HTTPException(status_code=404, detail="Сессия формы не найдена")
+
+    form_row = await database.fetch_one(
+        "SELECT code FROM forms WHERE id = :id",
+        {"id": session_row.form_id}
+    )
+    if not form_row:
+        raise HTTPException(status_code=404, detail="Форма для текущей сессии не найдена")
+
+    navigation = await _get_navigation_summary(instance_id, session_row.current_step_id)
+
+    state = {
+        "form_id": session_row.form_id,
+        "form_code": form_row.code,
+        "current_step_id": session_row.current_step_id,
+        "current_step_code": navigation.get("current_step_code"),
+        "completed_steps": navigation.get("completed_steps", []),
+        "available_steps": navigation.get("available_steps", []),
+    }
+    form_sessions[instance_id] = state
+    return state
+
+
+async def _validate_navigation(instance_id: int, current_step_id: Optional[int], target_step_id: int) -> None:
+    """Проверяет, что переход к целевому шагу разрешен."""
+    completed_rows = await database.fetch_all(
+        "SELECT step_id FROM instance_steps WHERE instance_id = :id AND status_code = 'completed'",
+        {"id": instance_id}
+    )
+    allowed_ids = {row.step_id for row in completed_rows}
+
+    if current_step_id:
+        allowed_ids.add(current_step_id)
+        forward_ids = await _get_valid_forward_steps(instance_id, current_step_id)
+        allowed_ids.update(forward_ids)
+
+    if target_step_id not in allowed_ids:
+        raise HTTPException(status_code=403, detail="Переход к указанному шагу недоступен")
+
+
+async def _get_session_for_form(form_code: str, session_id: int) -> Tuple[int, Dict[str, Any]]:
+    """Возвращает form_id и состояние сессии, проверяя принадлежность форме."""
+    form_id = await _get_id_by_code("forms", form_code)
+    session_row = await database.fetch_one(
+        "SELECT form_id FROM form_instances WHERE id = :sid",
+        {"sid": session_id}
+    )
+    if not session_row or session_row.form_id != form_id:
+        raise HTTPException(status_code=404, detail="Сессия формы не найдена")
+
+    state = await _sync_session_state(session_id)
+    return form_id, state
+
+
+async def _get_step_details(instance_id: int, step_id: int, *, current_step_id: Optional[int] = None) -> StepResponse:
     """
     Собирает всю информацию о шаге.
     Корректно отдает 'options' из 'dictionaries' ИЛИ 'field_options'.
     """
-    step_row = await database.fetch_one("SELECT id, title, is_terminal FROM form_steps WHERE id = :step_id",
-                                        {"step_id": step_id})
+    step_row = await database.fetch_one(
+        "SELECT id, code, title, is_terminal FROM form_steps WHERE id = :step_id",
+        {"step_id": step_id}
+    )
     if not step_row:
         raise HTTPException(status_code=404, detail=f"Шаг {step_id} не найден")
 
@@ -920,9 +1077,20 @@ async def _get_step_details(instance_id: int, step_id: int) -> StepResponse:
             input_type=field.input_type, is_required=field.is_required, options=options
         ))
 
+    active_step_id = current_step_id if current_step_id is not None else step_id
+    navigation = await _get_navigation_summary(instance_id, active_step_id)
+
     return StepResponse(
-        instance_id=instance_id, step_id=step_id, step_title=step_row.title,
-        is_terminal=step_row.is_terminal, fields=fields_list, values=values_dict
+        instance_id=instance_id,
+        step_id=step_id,
+        step_code=step_row.code,
+        step_title=step_row.title,
+        is_terminal=step_row.is_terminal,
+        fields=fields_list,
+        values=values_dict,
+        current_step_code=navigation.get("current_step_code"),
+        completed_steps=navigation.get("completed_steps", []),
+        available_steps=navigation.get("available_steps", []),
     )
 
 
@@ -938,26 +1106,44 @@ async def _save_answers(instance_id: int, step_id: int, answers: List[Answer]):
 
     async with database.transaction():
         for ans in answers:
-            if ans.field_code not in field_map: continue
+            if ans.field_code not in field_map:
+                continue
 
             field_id, data_type = field_map[ans.field_code]
-            value = ans.value
+            raw_value = ans.value
 
-            await database.execute("DELETE FROM instance_answers WHERE instance_id = :id AND field_id = :fid",
-                                   {"id": instance_id, "fid": field_id})
+            value_text = None
+            value_num = None
+            value_bool = None
+            value_date = None
 
-            col_name = "value_text"
             if data_type == 'boolean':
-                col_name = "value_bool"; value = bool(value)
+                value_bool = bool(raw_value) if raw_value is not None else None
             elif data_type in ('integer', 'decimal'):
-                col_name = "value_num"; value = float(value)
+                value_num = float(raw_value) if raw_value is not None else None
             elif data_type in ('date', 'datetime'):
-                col_name = "value_date"
+                value_date = raw_value
             else:
-                value = str(value)
+                value_text = str(raw_value) if raw_value is not None else None
 
-            query_ins = f"INSERT INTO instance_answers (instance_id, field_id, {col_name}, updated_at) VALUES (:id, :fid, :val, CURRENT_TIMESTAMP)"
-            await database.execute(query_ins, {"id": instance_id, "fid": field_id, "val": value})
+            query_ins = """
+                INSERT INTO instance_answers (instance_id, field_id, value_text, value_num, value_bool, value_date, updated_at)
+                VALUES (:id, :fid, :v_text, :v_num, :v_bool, :v_date, CURRENT_TIMESTAMP)
+                ON CONFLICT(instance_id, field_id) DO UPDATE SET
+                    value_text = excluded.value_text,
+                    value_num = excluded.value_num,
+                    value_bool = excluded.value_bool,
+                    value_date = excluded.value_date,
+                    updated_at = CURRENT_TIMESTAMP
+            """
+            await database.execute(query_ins, {
+                "id": instance_id,
+                "fid": field_id,
+                "v_text": value_text,
+                "v_num": value_num,
+                "v_bool": value_bool,
+                "v_date": value_date,
+            })
 
             # TODO: Добавить обработку multiselect (instance_answers_multi)
 
@@ -1024,16 +1210,8 @@ async def _determine_next_step(instance_id: int, current_step_id: int) -> Option
                                             {"id": current_step_id})
     if current_step.is_terminal: return None
 
-    query = "SELECT target_step_id, condition_group_id FROM step_transitions WHERE source_step_id = :id ORDER BY priority"
-    transitions = await database.fetch_all(query, {"id": current_step_id})
-    if not transitions: return None
-
-    all_answers = await _get_all_answers(instance_id)
-
-    for trans in transitions:
-        if await _evaluate_group(trans.condition_group_id, all_answers):
-            return trans.target_step_id
-    return None
+    valid_steps = await _get_valid_forward_steps(instance_id, current_step_id)
+    return valid_steps[0] if valid_steps else None
 
 
 async def _get_instance_status_id(code: str) -> int:
@@ -1056,7 +1234,12 @@ async def start_form(data: StartFormRequest):
                                         {"fid": data.form_id, "uid": data.user_id, "sid": status_in_progress_id})
 
     if instance:
-        return await _get_step_details(instance.id, instance.current_step_id)
+        state = await _sync_session_state(instance.id)
+        return await _get_step_details(
+            instance.id,
+            instance.current_step_id,
+            current_step_id=state.get("current_step_id")
+        )
 
     form_row = await database.fetch_one("SELECT start_step_id FROM forms WHERE id = :id AND is_active = TRUE",
                                         {"id": data.form_id})
@@ -1076,7 +1259,8 @@ async def start_form(data: StartFormRequest):
     query_log_step = "INSERT INTO instance_steps (instance_id, step_id, status_code, entered_at) VALUES (:id, :step_id, 'entered', CURRENT_TIMESTAMP)"
     await database.execute(query_log_step, {"id": instance_id, "step_id": start_step_id})
 
-    return await _get_step_details(instance_id, start_step_id)
+    state = await _sync_session_state(instance_id)
+    return await _get_step_details(instance_id, start_step_id, current_step_id=state.get("current_step_id"))
 
 
 @app.get("/instance/{instance_id}", response_model=StepResponse, tags=["User - Runtime"])
@@ -1087,7 +1271,12 @@ async def get_current_step(instance_id: int):
     if not instance or not instance.current_step_id:
         raise HTTPException(status_code=404, detail="Инстанс или текущий шаг не найдены")
 
-    return await _get_step_details(instance_id, instance.current_step_id)
+    state = await _sync_session_state(instance_id)
+    return await _get_step_details(
+        instance_id,
+        instance.current_step_id,
+        current_step_id=state.get("current_step_id")
+    )
 
 
 @app.post("/instance/{instance_id}/submit", response_model=SubmitStepResponse, tags=["User - Runtime"])
@@ -1116,14 +1305,61 @@ async def submit_step(instance_id: int, data: SubmitStepRequest):
             "INSERT INTO instance_steps (instance_id, step_id, status_code, entered_at) VALUES (:id, :step_id, 'entered', CURRENT_TIMESTAMP)",
             {"id": instance_id, "step_id": next_step_id})
 
-        return SubmitStepResponse(instance_id=instance_id, next_step_id=next_step_id, is_complete=False)
+        state = await _sync_session_state(instance_id)
+        return SubmitStepResponse(
+            instance_id=instance_id,
+            next_step_id=next_step_id,
+            next_step_code=state.get("current_step_code"),
+            is_complete=False,
+            completed_steps=state.get("completed_steps", []),
+            available_steps=state.get("available_steps", []),
+        )
     else:
         status_completed_id = await _get_instance_status_id('completed')
         await database.execute(
             "UPDATE form_instances SET status_id = :sid, current_step_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = :id",
             {"sid": status_completed_id, "id": instance_id})
 
-        return SubmitStepResponse(instance_id=instance_id, next_step_id=None, is_complete=True)
+        state = await _sync_session_state(instance_id)
+        return SubmitStepResponse(
+            instance_id=instance_id,
+            next_step_id=None,
+            next_step_code=None,
+            is_complete=True,
+            completed_steps=state.get("completed_steps", []),
+            available_steps=state.get("available_steps", []),
+        )
+
+
+@app.get(
+    "/runtime/forms/{form_code}/sessions/{session_id}/steps/{step_code}",
+    response_model=StepResponse,
+    tags=["User - Runtime"]
+)
+async def get_session_step(form_code: str, session_id: int, step_code: str):
+    """Возвращает состояние конкретного шага в рамках сессии формы."""
+    form_id, state = await _get_session_for_form(form_code, session_id)
+    step_id = await _get_step_id_by_code(form_id, step_code)
+    await _validate_navigation(session_id, state.get("current_step_id"), step_id)
+
+    return await _get_step_details(session_id, step_id, current_step_id=state.get("current_step_id"))
+
+
+@app.put(
+    "/runtime/forms/{form_code}/sessions/{session_id}/steps/{step_code}",
+    response_model=StepResponse,
+    tags=["User - Runtime"]
+)
+async def update_session_step(form_code: str, session_id: int, step_code: str, data: SubmitStepRequest):
+    """Сохраняет ответы для указанного шага, если переход разрешен."""
+    form_id, state = await _get_session_for_form(form_code, session_id)
+    step_id = await _get_step_id_by_code(form_id, step_code)
+    await _validate_navigation(session_id, state.get("current_step_id"), step_id)
+
+    await _save_answers(session_id, step_id, data.answers)
+
+    updated_state = await _sync_session_state(session_id)
+    return await _get_step_details(session_id, step_id, current_step_id=updated_state.get("current_step_id"))
 
 
 @app.get("/", include_in_schema=False)
